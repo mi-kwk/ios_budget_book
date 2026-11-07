@@ -1,10 +1,10 @@
 import Foundation
 
 enum EntryKind: String, Codable, CaseIterable, Identifiable {
-    case expense, income, transfer
+    case expense, income, transfer, refund
     var id: String { rawValue }
     var title: String {
-        switch self { case .expense: "支出"; case .income: "収入"; case .transfer: "振替" }
+        switch self { case .expense: "支出"; case .income: "収入"; case .transfer: "振替"; case .refund: "返金" }
     }
 }
 
@@ -58,6 +58,10 @@ struct BudgetEntry: Identifiable, Codable, Equatable {
     var tagIDs: Set<UUID> = []
     var includedInTotals = true
     var memo = ""
+    // Optional fields keep files written before refund support readable.
+    var merchant: String? = nil
+    var createdAt: Date? = nil
+    var refundOfID: UUID? = nil
 }
 
 struct BudgetSnapshot: Codable, Equatable {
@@ -94,12 +98,47 @@ struct BudgetSnapshot: Codable, Equatable {
     func validated(_ input: BudgetEntry, previous: BudgetEntry? = nil) throws -> BudgetEntry {
         var entry = input
         guard books.contains(where: { $0.id == entry.bookID }) else { throw BudgetError.invalidBook }
-        guard entry.amount > 0, entry.amount <= 999_999_999_999 else { throw BudgetError.invalidAmount }
+        guard entry.amount > 0, entry.amount <= 999_999_999 else { throw BudgetError.invalidAmount }
+        guard entry.date.timeIntervalSince1970.isFinite else { throw BudgetError.invalidDate }
+        guard (entry.merchant ?? "").count <= 100, entry.memo.count <= 1000 else { throw BudgetError.textTooLong }
+        if let previous {
+            guard previous.id == entry.id, previous.kind == entry.kind, previous.bookID == entry.bookID,
+                  previous.refundOfID == entry.refundOfID else { throw BudgetError.immutableKind }
+            entry.createdAt = previous.createdAt
+        }
+        entry.date = Calendar.current.startOfDay(for: entry.date)
+        let refunds = entries.filter { $0.kind == .refund && $0.refundOfID == entry.id }
+        if !refunds.isEmpty {
+            guard entry.kind == .expense else { throw BudgetError.refundConflict }
+            var remaining = entry.amount
+            for refund in refunds {
+                guard Calendar.current.startOfDay(for: refund.date) >= entry.date,
+                      refund.amount > 0, refund.amount <= remaining else { throw BudgetError.refundConflict }
+                remaining -= refund.amount
+            }
+        }
+        if entry.kind != .refund && entry.refundOfID != nil { throw BudgetError.invalidRefund }
+
         func validAccount(_ id: UUID?, oldID: UUID?) -> Bool {
             guard let id else { return false }
             return accounts.contains { $0.id == id && $0.bookID == entry.bookID && (!$0.isArchived || oldID == id) }
         }
-        if entry.kind == .transfer {
+        if entry.kind == .refund {
+            guard let original = entries.first(where: { $0.id == entry.refundOfID && $0.kind == .expense && $0.bookID == entry.bookID }),
+                  original.id != entry.id else { throw BudgetError.invalidRefund }
+            guard entry.date >= Calendar.current.startOfDay(for: original.date) else { throw BudgetError.refundDate }
+            // Subtract from the remaining balance rather than summing untrusted amounts.
+            var remaining = original.amount
+            for other in entries where other.kind == .refund && other.refundOfID == original.id && other.id != entry.id {
+                guard other.amount > 0, other.amount <= remaining else { throw BudgetError.refundConflict }
+                remaining -= other.amount
+            }
+            guard entry.amount <= remaining else { throw BudgetError.refundConflict }
+            guard validAccount(entry.destinationID, oldID: previous?.destinationID) else { throw BudgetError.invalidAccount }
+            entry.sourceID = nil
+            entry.categoryID = original.categoryID
+            entry.includedInTotals = original.includedInTotals
+        } else if entry.kind == .transfer {
             guard entry.sourceID != nil || entry.destinationID != nil else { throw BudgetError.missingTransferAccount }
             guard entry.sourceID == nil || validAccount(entry.sourceID, oldID: previous?.sourceID) else { throw BudgetError.invalidAccount }
             guard entry.destinationID == nil || validAccount(entry.destinationID, oldID: previous?.destinationID) else { throw BudgetError.invalidAccount }
@@ -121,18 +160,26 @@ struct BudgetSnapshot: Codable, Equatable {
                   isCategoryAvailable(category) || previous?.categoryID == category.id else { throw BudgetError.invalidCategory }
         }
         guard entry.tagIDs.allSatisfy({ id in
-            tags.contains { $0.id == id && $0.bookID == entry.bookID && (!$0.isArchived || previous?.tagIDs.contains(id) == true) }
+            tags.contains { $0.id == id && $0.bookID == entry.bookID && (!$0.isArchived || previous?.tagIDs.contains(id) == true ||
+                (entry.kind == .refund && previous == nil && entries.first(where: { $0.id == entry.refundOfID })?.tagIDs.contains(id) == true)) }
         }) else { throw BudgetError.invalidTag }
         return entry
     }
 }
 
 enum BudgetError: LocalizedError {
+    case invalidDate, textTooLong, immutableKind, invalidRefund, refundDate, refundConflict
     case invalidBook, invalidAmount, invalidAccount, missingTransferAccount, sameAccount, invalidCategory, invalidTag, emptyName, duplicateName, protectedItem
     var errorDescription: String? {
         switch self {
         case .invalidBook: "家計簿が見つかりません。"
-        case .invalidAmount: "金額は1〜999,999,999,999円の整数で入力してください。"
+        case .invalidAmount: "金額は1〜999,999,999円の整数で入力してください。"
+        case .invalidDate: "有効な日付を選択してください。"
+        case .textTooLong: "お店・相手先は100文字、メモは1,000文字以内で入力してください。"
+        case .immutableKind: "保存済みの種類・所属家計簿・元支出は変更できません。削除して再登録してください。"
+        case .invalidRefund: "同じ家計簿の元の支出を確認してください。"
+        case .refundDate: "返金日は元の支出日以降にしてください。"
+        case .refundConflict: "返金合計が支出額を超えるか、返金日より後の支出日になっています。金額・日付を確認してください。"
         case .invalidAccount: "有効な入出金元を選択してください。"
         case .missingTransferAccount: "振替元・振替先の少なくとも片方を指定してください。"
         case .sameAccount: "振替元と振替先は別の項目を選択してください。"
@@ -158,6 +205,7 @@ enum BudgetSummary {
             switch entry.kind {
             case .income: if includeExcluded || entry.includedInTotals { result.income += entry.amount }
             case .expense: if includeExcluded || entry.includedInTotals { result.expense += entry.amount }
+            case .refund: if includeExcluded || entry.includedInTotals { result.expense -= entry.amount }
             case .transfer: if includeExcluded { result.transfer += entry.amount }
             }
         }
@@ -183,7 +231,7 @@ extension BudgetSnapshot {
     @discardableResult
     mutating func saveCategory(id: UUID? = nil, bookID: UUID, kind: EntryKind, name: String, parentID: UUID?) throws -> UUID {
         guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
-        guard kind != .transfer else { throw BudgetError.invalidCategory }
+        guard kind != .transfer && kind != .refund else { throw BudgetError.invalidCategory }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw BudgetError.emptyName }
         let existing = id.flatMap { id in categories.first { $0.id == id } }
@@ -234,12 +282,14 @@ extension BudgetSnapshot {
     /// 常に現在の分類をたどるため、名称・所属変更後は過去取引にも即時反映する。
     func categoryAmounts(bookID: UUID, kind: EntryKind, entries: [BudgetEntry], parentID: UUID? = nil) -> [UUID: Int64] {
         var result: [UUID: Int64] = [:]
-        for entry in entries where entry.bookID == bookID && entry.kind == kind && entry.includedInTotals && kind != .transfer {
+        for raw in entries where raw.bookID == bookID && kind != .transfer && kind != .refund {
+            let entry = effectiveEntry(raw)
+            guard (entry.kind == kind || (kind == .expense && entry.kind == .refund)), entry.includedInTotals else { continue }
             guard let category = categories.first(where: { $0.id == entry.categoryID && $0.bookID == bookID && $0.kind == kind }) else { continue }
             if let parentID {
                 guard category.id == parentID || category.parentID == parentID else { continue }
-                result[category.id, default: 0] += entry.amount
-            } else { result[category.parentID ?? category.id, default: 0] += entry.amount }
+                result[category.id, default: 0] += entry.kind == .refund ? -entry.amount : entry.amount
+            } else { result[category.parentID ?? category.id, default: 0] += entry.kind == .refund ? -entry.amount : entry.amount }
         }
         return result
     }
@@ -266,7 +316,7 @@ struct BasicCategoryGroup: Identifiable {
             ]
         case .income:
             return [Self(name: "給与", children: ["給料", "賞与"]), Self(name: "その他収入", children: [])]
-        case .transfer: return []
+        case .transfer, .refund: return []
         }
     }
 }
@@ -377,7 +427,7 @@ extension BudgetSnapshot {
         }
         var categoryNames: Set<String> = []
         for category in categories {
-            try valid(bookIDs.contains(category.bookID) && category.kind != .transfer && named(category.name))
+            try valid(bookIDs.contains(category.bookID) && category.kind != .transfer && category.kind != .refund && named(category.name))
             let key = "\(category.bookID)|\(category.kind.rawValue)|\(category.parentID?.uuidString ?? "root")|\(category.name)"
             try valid(categoryNames.insert(key).inserted)
             if let parentID = category.parentID {
@@ -390,17 +440,76 @@ extension BudgetSnapshot {
             try valid(bookIDs.contains(tag.bookID) && named(tag.name))
             try valid(tagNames.insert("\(tag.bookID)|\(tag.name)").inserted)
         }
+        let entryMap = Dictionary(uniqueKeysWithValues: entries.map { ($0.id, $0) })
+        var refundedAmounts: [UUID: Int64] = [:]
         for entry in entries {
+            try valid(entry.createdAt?.timeIntervalSince1970.isFinite ?? true)
             try valid(bookIDs.contains(entry.bookID) && entry.amount > 0 && entry.amount <= 999_999_999_999 && entry.date.timeIntervalSince1970.isFinite)
             for id in [entry.sourceID, entry.destinationID].compactMap({ $0 }) { try valid(accountMap[id]?.bookID == entry.bookID) }
             try valid(entry.tagIDs.allSatisfy { tagMap[$0]?.bookID == entry.bookID })
-            if entry.kind == .transfer {
+            if entry.kind == .refund {
+                guard let originalID = entry.refundOfID, let original = entryMap[originalID] else { throw BackupError.invalidData }
+                try valid(original.kind == .expense && original.bookID == entry.bookID && entry.sourceID == nil && entry.destinationID != nil)
+                try valid(Calendar.current.startOfDay(for: entry.date) >= Calendar.current.startOfDay(for: original.date))
+                try valid(entry.categoryID == original.categoryID && entry.includedInTotals == original.includedInTotals)
+                let already = refundedAmounts[originalID, default: 0]
+                try valid(entry.amount <= original.amount - already)
+                refundedAmounts[originalID] = already + entry.amount
+            } else if entry.kind == .transfer {
+                try valid(entry.refundOfID == nil)
                 try valid(entry.categoryID == nil && !entry.includedInTotals && (entry.sourceID != nil || entry.destinationID != nil) && (entry.sourceID == nil || entry.sourceID != entry.destinationID))
             } else {
+                try valid(entry.refundOfID == nil)
                 try valid(entry.kind == .expense ? entry.sourceID != nil && entry.destinationID == nil : entry.destinationID != nil && entry.sourceID == nil)
                 guard let id = entry.categoryID, let category = categoryMap[id] else { throw BackupError.invalidData }
                 try valid(category.bookID == entry.bookID && category.kind == entry.kind)
             }
         }
+    }
+}
+
+
+extension BudgetSnapshot {
+    func effectiveEntry(_ entry: BudgetEntry) -> BudgetEntry {
+        guard entry.kind == .refund,
+              let original = entries.first(where: { $0.id == entry.refundOfID && $0.bookID == entry.bookID && $0.kind == .expense }) else { return entry }
+        var value = entry
+        value.categoryID = original.categoryID
+        value.includedInTotals = original.includedInTotals
+        return value
+    }
+    /// Stable ties preserve the order in legacy files without createdAt.
+    func orderedEntries(bookID: UUID) -> [BudgetEntry] {
+        entries.enumerated().filter { $0.element.bookID == bookID }.sorted {
+            let left = Calendar.current.startOfDay(for: $0.element.date)
+            let right = Calendar.current.startOfDay(for: $1.element.date)
+            if left != right { return left > right }
+            let a = $0.element.createdAt ?? .distantPast, b = $1.element.createdAt ?? .distantPast
+            return a == b ? $0.offset < $1.offset : a > b
+        }.map { effectiveEntry($0.element) }
+    }
+    func refunds(for id: UUID) -> [BudgetEntry] {
+        guard let original = entries.first(where: { $0.id == id && $0.kind == .expense }) else { return [] }
+        return orderedEntries(bookID: original.bookID).filter { $0.kind == .refund && $0.refundOfID == id }
+    }
+    func refundedAmount(for id: UUID) -> Int64 { refunds(for: id).reduce(0) { $0 + $1.amount } }
+    mutating func saveTransaction(_ input: BudgetEntry, now: Date = Date()) throws {
+        let previous = entries.first { $0.id == input.id }
+        var entry = try validated(input, previous: previous)
+        if previous == nil { entry.createdAt = now }
+        var next = self
+        if let index = next.entries.firstIndex(where: { $0.id == entry.id }) { next.entries[index] = entry }
+        else { next.entries.append(entry) }
+        // Store dependent fields together with the original in one repository write.
+        if entry.kind == .expense {
+            for index in next.entries.indices where next.entries[index].kind == .refund && next.entries[index].refundOfID == entry.id {
+                next.entries[index].categoryID = entry.categoryID
+                next.entries[index].includedInTotals = entry.includedInTotals
+            }
+        }
+        self = next
+    }
+    mutating func deleteTransaction(_ id: UUID) {
+        entries.removeAll { $0.id == id || ($0.kind == .refund && $0.refundOfID == id) }
     }
 }

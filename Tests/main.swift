@@ -175,6 +175,7 @@ legacyObject["accounts"] = legacyAccounts
 let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
 let legacyState = try JSONDecoder().decode(BudgetSnapshot.self, from: legacyData)
 expect(legacyState.orderedAccounts(bookID: masterBook).map(\.id) == masters.accounts.filter { $0.bookID == masterBook }.map(\.id), "旧JSONの並び順なしデータを配列順で読み込める")
+try runRefundChecks()
 try runBackupChecks()
 try await runCloudChecks()
 print("Passed \(checks) domain checks")

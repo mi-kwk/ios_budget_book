@@ -19,7 +19,7 @@ struct SettingsView: View {
                 NavigationLink("バックアップ・復元", destination: BackupStatusView())
             }
             Section("開発中の枠組み") {
-                Text("端末内に保存します。暗号化ファイルの書き出し・復元が利用できます。iCloudバックアップは今後対応します。").font(.footnote)
+                Text("端末内に保存します。暗号化ファイルの書き出し・復元が利用できます。iCloudバックアップの利用には開発用の接続設定が必要です。").font(.footnote)
                 Text("レシート撮影・CSV取り込み・残高管理・複数人共有は今後対応します。").font(.footnote).foregroundStyle(.secondary)
             }
         }.navigationTitle("設定").toolbar { ToolbarItem(placement: .confirmationAction) { Button("完了") { dismiss() } } }

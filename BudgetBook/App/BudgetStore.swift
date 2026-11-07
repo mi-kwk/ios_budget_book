@@ -36,7 +36,7 @@ final class BudgetStore: ObservableObject {
     var accounts: [MoneyAccount] { bookID.map { state.orderedAccounts(bookID: $0) } ?? [] }
     var categories: [BudgetCategory] { state.categories.filter { $0.bookID == bookID }.sorted { $0.order < $1.order } }
     var tags: [BudgetTag] { state.tags.filter { $0.bookID == bookID } }
-    var entries: [BudgetEntry] { state.entries.filter { $0.bookID == bookID }.sorted { $0.date > $1.date } }
+    var entries: [BudgetEntry] { bookID.map { state.orderedEntries(bookID: $0) } ?? [] }
     func entries(in month: Date) -> [BudgetEntry] {
         let calendar = Calendar.current
         return entries.filter { calendar.isDate($0.date, equalTo: month, toGranularity: .month) }
@@ -62,13 +62,10 @@ final class BudgetStore: ObservableObject {
     func selectBook(_ id: UUID) { update { $0.selectedBookID = id } }
     func saveEntry(_ entry: BudgetEntry) -> Bool {
         update { snapshot in
-            let old = snapshot.entries.first { $0.id == entry.id }
-            let validated = try snapshot.validated(entry, previous: old)
-            if let index = snapshot.entries.firstIndex(where: { $0.id == entry.id }) { snapshot.entries[index] = validated }
-            else { snapshot.entries.append(validated) }
+            try snapshot.saveTransaction(entry)
         }
     }
-    func deleteEntry(_ id: UUID) { update { $0.entries.removeAll { $0.id == id } } }
+    func deleteEntry(_ id: UUID) { update { $0.deleteTransaction(id) } }
     func addBook(name: String, shared: Bool) {
         update { snapshot in
             let name = name.trimmingCharacters(in: .whitespacesAndNewlines)

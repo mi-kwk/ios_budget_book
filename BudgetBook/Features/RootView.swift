@@ -123,9 +123,18 @@ struct CategoryChart: View {
             ContentUnavailableView("集計する取引がありません", systemImage: "chart.pie", description: Text("＋から収入や支出を登録できます。"))
         } else {
             Chart(amounts) { item in
-                SectorMark(angle: .value("金額", item.amount), innerRadius: .ratio(0.62), angularInset: 2)
-                    .foregroundStyle(by: .value("カテゴリ", item.name))
+                if amounts.contains(where: { $0.amount < 0 }) {
+                    BarMark(x: .value("金額", item.amount), y: .value("カテゴリ", item.name))
+                        .foregroundStyle(by: .value("カテゴリ", item.name))
+                } else {
+                    SectorMark(angle: .value("金額", item.amount), innerRadius: .ratio(0.62), angularInset: 2)
+                        .foregroundStyle(by: .value("カテゴリ", item.name))
+                }
             }.frame(height: 190)
+            if amounts.contains(where: { $0.amount < 0 }) {
+                Text("返金の差し引きでマイナスのカテゴリがあるため、棒グラフで表示しています。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             ForEach(amounts) { item in
                 NavigationLink {
                     if parentID == nil {
@@ -180,6 +189,7 @@ struct EntryRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(entry.kind == .transfer ? "\(store.accountName(entry.sourceID)) → \(store.accountName(entry.destinationID))" : store.categoryName(entry.categoryID))
                 Text("\(entry.date.formatted(date: .abbreviated, time: .omitted)) ・ \(entry.kind.title)").font(.caption).foregroundStyle(.secondary)
+                if let merchant = entry.merchant, !merchant.isEmpty { Text(merchant).font(.caption) }
                 if !entry.memo.isEmpty { Text(entry.memo).font(.caption).lineLimit(2) }
                 if !entry.includedInTotals && entry.kind != .transfer { Text("収支計算の対象外").font(.caption2).foregroundStyle(.secondary) }
             }
@@ -238,11 +248,11 @@ struct HistoryView: View {
                 }
             }
             Section("すべての期間・対象外の取引も含む") {
-                ForEach(BudgetSummary.matchingTags(store.entries, tags: selectedTags, matchAll: matchAll).filter { text.isEmpty || $0.memo.localizedCaseInsensitiveContains(text) || store.categoryName($0.categoryID).localizedCaseInsensitiveContains(text) }) { entry in
+                ForEach(BudgetSummary.matchingTags(store.entries, tags: selectedTags, matchAll: matchAll).filter { text.isEmpty || $0.memo.localizedCaseInsensitiveContains(text) || ($0.merchant ?? "").localizedCaseInsensitiveContains(text) }) { entry in
                     NavigationLink { EntryDetail(entryID: entry.id) } label: { EntryRow(entry: entry) }
                 }
             }
-        }.searchable(text: $text, prompt: "メモ・カテゴリ名").navigationTitle("履歴")
+        }.searchable(text: $text, prompt: "お店・相手先・メモ").navigationTitle("履歴")
     }
 }
 
@@ -252,20 +262,44 @@ struct EntryDetail: View {
     let entryID: UUID
     @State private var editing = false
     @State private var deleting = false
+    @State private var addingRefund = false
     var body: some View {
         Group {
-            if let entry = store.state.entries.first(where: { $0.id == entryID }) {
+            if let raw = store.state.entries.first(where: { $0.id == entryID }) {
+                let entry = store.state.effectiveEntry(raw)
                 List {
                     EntryRow(entry: entry)
                     LabeledContent("出金元", value: store.accountName(entry.sourceID))
                     LabeledContent("入金先", value: store.accountName(entry.destinationID))
                     ForEach(store.tags.filter { entry.tagIDs.contains($0.id) }) { Text("#\($0.name)") }
+                    if entry.kind == .expense {
+                        let refunds = store.state.refunds(for: entry.id)
+                        let refunded = store.state.refundedAmount(for: entry.id)
+                        Section("返金") {
+                            LabeledContent("返金合計", value: yen(refunded))
+                            LabeledContent("未返金額", value: yen(entry.amount - refunded))
+                            Button("この支出の返金を登録") { addingRefund = true }.disabled(refunded >= entry.amount)
+                            ForEach(refunds) { refund in
+                                NavigationLink { EntryDetail(entryID: refund.id) } label: { EntryRow(entry: refund) }
+                            }
+                        }
+                    }
+                    if entry.kind == .refund, let originalID = entry.refundOfID {
+                        Section("元の支出") {
+                            NavigationLink("元の支出を開く") { EntryDetail(entryID: originalID) }
+                        }
+                    }
                     Button("編集") { editing = true }
                     Button("削除", role: .destructive) { deleting = true }
                 }
+                .sheet(isPresented: $addingRefund) { NavigationStack { EntryEditor(bookID: entry.bookID, refundOriginal: entry) } }
                 .sheet(isPresented: $editing) { NavigationStack { EntryEditor(bookID: entry.bookID, existing: entry) } }
                 .confirmationDialog("この取引を削除しますか？", isPresented: $deleting, titleVisibility: .visible) {
                     Button("削除", role: .destructive) { store.deleteEntry(entryID); if store.errorMessage == nil { dismiss() } }
+                } message: {
+                    Text(entry.kind == .expense && !store.state.refunds(for: entryID).isEmpty
+                         ? "この支出に紐づく返金もすべて削除します。この操作は取り消せません。"
+                         : "この操作は取り消せません。")
                 }
             } else { ContentUnavailableView("取引が見つかりません", systemImage: "tray") }
         }.navigationTitle("取引詳細")
