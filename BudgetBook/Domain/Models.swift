@@ -62,6 +62,7 @@ struct BudgetEntry: Identifiable, Codable, Equatable {
 
 struct BudgetSnapshot: Codable, Equatable {
     var schemaVersion = 1
+    var cloudBackupSettings: CloudBackupSettings? = nil
     var books: [HouseholdBook] = []
     var accounts: [MoneyAccount] = []
     var categories: [BudgetCategory] = []
@@ -341,6 +342,65 @@ extension BudgetSnapshot {
         guard Set(ids).count == ids.count, ids.count == items.count, Set(ids) == Set(items.map(\.id)) else { throw BudgetError.invalidAccount }
         for (position, id) in ids.enumerated() {
             if let index = accounts.firstIndex(where: { $0.id == id }) { accounts[index].order = position }
+        }
+    }
+}
+
+extension BudgetSnapshot {
+    /// 外部ファイルの復元前に、参照切れ・家計簿越境・標準項目の欠落を検証する。
+    func validateBackup() throws {
+        guard schemaVersion == 1 else { throw BackupError.unsupportedVersion }
+        func valid(_ condition: Bool) throws { if !condition { throw BackupError.invalidData } }
+        func unique(_ ids: [UUID]) -> Bool { Set(ids).count == ids.count }
+        func named(_ name: String) -> Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf8.count <= 10_000 }
+        try valid(!books.isEmpty && unique(books.map(\.id)) && unique(accounts.map(\.id)) && unique(categories.map(\.id)) && unique(tags.map(\.id)) && unique(entries.map(\.id)))
+        let bookIDs = Set(books.map(\.id))
+        let accountMap = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        let categoryMap = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        let tagMap = Dictionary(uniqueKeysWithValues: tags.map { ($0.id, $0) })
+        let accountGroups = Dictionary(grouping: accounts, by: \.bookID)
+        let categoryGroups = Dictionary(grouping: categories, by: \.bookID)
+        let tagGroups = Dictionary(grouping: tags, by: \.bookID)
+        try valid(selectedBookID == nil || bookIDs.contains(selectedBookID!))
+        for book in books {
+            try valid(named(book.name))
+            try valid((accountGroups[book.id] ?? []).filter { $0.isWallet }.count == 1)
+            for kind in [EntryKind.expense, .income] {
+                let defaults = (categoryGroups[book.id] ?? []).filter { $0.kind == kind && $0.isUncategorized }
+                try valid(defaults.count == 1 && defaults[0].name == "未分類" && defaults[0].parentID == nil && !defaults[0].isArchived)
+            }
+            try valid(book.hiddenTagIDs.isSubset(of: Set((tagGroups[book.id] ?? []).map(\.id))))
+        }
+        for account in accounts {
+            try valid(bookIDs.contains(account.bookID) && named(account.name))
+            if account.isWallet { try valid(account.name == "お財布" && !account.isArchived) }
+        }
+        var categoryNames: Set<String> = []
+        for category in categories {
+            try valid(bookIDs.contains(category.bookID) && category.kind != .transfer && named(category.name))
+            let key = "\(category.bookID)|\(category.kind.rawValue)|\(category.parentID?.uuidString ?? "root")|\(category.name)"
+            try valid(categoryNames.insert(key).inserted)
+            if let parentID = category.parentID {
+                guard let parent = categoryMap[parentID] else { throw BackupError.invalidData }
+                try valid(parent.bookID == category.bookID && parent.kind == category.kind && parent.parentID == nil && !parent.isUncategorized)
+            }
+        }
+        var tagNames: Set<String> = []
+        for tag in tags {
+            try valid(bookIDs.contains(tag.bookID) && named(tag.name))
+            try valid(tagNames.insert("\(tag.bookID)|\(tag.name)").inserted)
+        }
+        for entry in entries {
+            try valid(bookIDs.contains(entry.bookID) && entry.amount > 0 && entry.amount <= 999_999_999_999 && entry.date.timeIntervalSince1970.isFinite)
+            for id in [entry.sourceID, entry.destinationID].compactMap({ $0 }) { try valid(accountMap[id]?.bookID == entry.bookID) }
+            try valid(entry.tagIDs.allSatisfy { tagMap[$0]?.bookID == entry.bookID })
+            if entry.kind == .transfer {
+                try valid(entry.categoryID == nil && !entry.includedInTotals && (entry.sourceID != nil || entry.destinationID != nil) && (entry.sourceID == nil || entry.sourceID != entry.destinationID))
+            } else {
+                try valid(entry.kind == .expense ? entry.sourceID != nil && entry.destinationID == nil : entry.destinationID != nil && entry.sourceID == nil)
+                guard let id = entry.categoryID, let category = categoryMap[id] else { throw BackupError.invalidData }
+                try valid(category.bookID == entry.bookID && category.kind == entry.kind)
+            }
         }
     }
 }

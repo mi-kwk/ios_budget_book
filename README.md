@@ -27,11 +27,11 @@ Xcodeで `BudgetBook` スキームとiPhoneシミュレータを選び、▶︎�
 
 ```bash
 bash Scripts/test-domain.sh
-xcodebuild -project BudgetBook.xcodeproj -scheme BudgetBook -sdk iphonesimulator CODE_SIGNING_ALLOWED=NO build
+xcodebuild -project BudgetBook.xcodeproj -scheme BudgetBook -sdk iphonesimulator CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build
 ```
 
 ローカル保存はApplication Support内の `BudgetBook/budget-v1.json` です。保存エラー時はUIの状態を確定せず、読込エラー時は空データで上書きせず編集を停止します。
-これは暗号化バックアップ用ファイルではありません。現段階ではiCloud保存・復元機能は未実装です。
+端末内保存ファイルと暗号化バックアップファイルは別です。設定からパスワード付きファイルの書き出し・復元ができます。iCloudの手動／自動バックアップも実装しています。接続には開発用のCloudKit設定が必要です。
 
 変更履歴はGitで管理し、GitHubの `mi-kwk/ios_budget_book` と連携します。
 
@@ -48,3 +48,11 @@ xcodebuild -project BudgetBook.xcodeproj -scheme BudgetBook -sdk iphonesimulator
 
 タグを追加する際、同名のアーカイブ済みタグがあれば復元して再利用できます。名称変更によって過去取引との関連は切れません。
 取引入力の出金元・入金先を押すと選択画面が開き、右上＋から追加できます。追加後は一覧から選択してください。
+
+## バックアップ・復元
+
+設定 → バックアップ・復元で、8文字以上のパスワードを使って `.budgetbackup` を書き出せます。復元時はファイルの日時・件数を確認してから全データを置き換えます。復元前の状態は端末内に暗号化して7日間保持し、戻す・早期削除ができます。
+
+詳細な操作、形式・保存方式は `docs/backup-design.md` を参照してください。ファイルは32MBまで対応。iCloudの接続設定・動作条件は `docs/icloud-setup.md` を参照してください。
+
+復元前退避の鍵にはKeychainを使います。シミュレータでも署名を無効にせず、Xcodeの通常実行か上記のアドホック署名付きビルドで確認してください。署名なしでは鍵取得に失敗し、復元を中止する場合があります。

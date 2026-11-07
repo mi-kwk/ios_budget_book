@@ -19,7 +19,7 @@ struct SettingsView: View {
                 NavigationLink("バックアップ・復元", destination: BackupStatusView())
             }
             Section("開発中の枠組み") {
-                Text("端末内に保存します。iCloudバックアップ・暗号化ファイル出力はまだ利用できません。").font(.footnote)
+                Text("端末内に保存します。暗号化ファイルの書き出し・復元が利用できます。iCloudバックアップは今後対応します。").font(.footnote)
                 Text("レシート撮影・CSV取り込み・残高管理・複数人共有は今後対応します。").font(.footnote).foregroundStyle(.secondary)
             }
         }.navigationTitle("設定").toolbar { ToolbarItem(placement: .confirmationAction) { Button("完了") { dismiss() } } }
@@ -230,19 +230,6 @@ struct TagDisplayView: View {
             }
             Text("非表示にしても、取引への付与・検索には使えます。").font(.caption).foregroundStyle(.secondary)
         }.navigationTitle("タグ集計の表示")
-    }
-}
-struct BackupStatusView: View {
-    var body: some View {
-        List {
-            Section { Label("バックアップは未実装です", systemImage: "icloud.slash"); Text("現在のデータはこの端末内のみです。大切な記録の本番運用は、バックアップ機能の完成後を想定しています。") }
-            Section("今後の実装予定") {
-                Text("iCloudへの手動・自動保存、成功した最新3回分の保持")
-                Text("パスワード付き暗号化ファイルの出力・読み込み")
-                Text("復元前確認・全置換・失敗時のデータ維持")
-                Text("復元前データの退避・7日間保持・戻す操作")
-            }
-        }.navigationTitle("バックアップ・復元")
     }
 }
 
