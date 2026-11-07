@@ -112,16 +112,12 @@ struct CategoryChart: View {
     let kind: EntryKind
     var parentID: UUID? = nil
     private var amounts: [CategoryAmount] {
-        var values: [UUID: Int64] = [:]
-        for entry in store.entries(in: month) where entry.kind == kind && entry.includedInTotals {
-            guard let category = store.categories.first(where: { $0.id == entry.categoryID }) else { continue }
-            if let parentID {
-                guard category.id == parentID || category.parentID == parentID else { continue }
-                values[category.id, default: 0] += entry.amount
-            } else { values[category.parentID ?? category.id, default: 0] += entry.amount }
-        }
-        return values.map { CategoryAmount(id: $0.key, name: store.categoryName($0.key), amount: $0.value) }.sorted { $0.amount > $1.amount }
+        guard let bookID = store.bookID else { return [] }
+        return store.state.categoryAmounts(bookID: bookID, kind: kind, entries: store.entries(in: month), parentID: parentID)
+            .map { CategoryAmount(id: $0.key, name: store.categoryName($0.key), amount: $0.value) }
+            .sorted { $0.amount == $1.amount ? $0.name < $1.name : $0.amount > $1.amount }
     }
+
     var body: some View {
         if amounts.isEmpty {
             ContentUnavailableView("集計する取引がありません", systemImage: "chart.pie", description: Text("＋から収入や支出を登録できます。"))

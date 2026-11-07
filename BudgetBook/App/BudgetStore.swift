@@ -66,6 +66,7 @@ final class BudgetStore: ObservableObject {
             for kind in [EntryKind.expense, .income] {
                 snapshot.categories.append(BudgetCategory(bookID: book.id, name: "未分類", kind: kind, isUncategorized: true))
             }
+            try snapshot.addBasicCategories(bookID: book.id)
             snapshot.selectedBookID = book.id
         }
     }
@@ -76,11 +77,7 @@ final class BudgetStore: ObservableObject {
             guard !name.isEmpty else { throw BudgetError.emptyName }
             switch type {
             case .category:
-                guard !snapshot.categories.contains(where: { $0.bookID == bookID && $0.name == name && $0.kind == kind && $0.parentID == parentID }) else { throw BudgetError.duplicateName }
-                if let parentID {
-                    guard snapshot.categories.contains(where: { $0.id == parentID && $0.bookID == bookID && $0.kind == kind && $0.parentID == nil && !$0.isArchived && !$0.isUncategorized }) else { throw BudgetError.invalidCategory }
-                }
-                snapshot.categories.append(BudgetCategory(bookID: bookID, name: name, kind: kind, parentID: parentID))
+                try snapshot.saveCategory(bookID: bookID, kind: kind, name: name, parentID: parentID)
             case .tag:
                 guard !snapshot.tags.contains(where: { $0.bookID == bookID && $0.name == name }) else { throw BudgetError.duplicateName }
                 snapshot.tags.append(BudgetTag(bookID: bookID, name: name))
@@ -93,8 +90,8 @@ final class BudgetStore: ObservableObject {
         update { snapshot in
             switch type {
             case .category:
-                guard let index = snapshot.categories.firstIndex(where: { $0.id == id }), !snapshot.categories[index].isUncategorized else { throw BudgetError.protectedItem }
-                snapshot.categories[index].isArchived.toggle()
+                guard let category = snapshot.categories.first(where: { $0.id == id && $0.bookID == self.bookID }) else { throw BudgetError.invalidCategory }
+                try snapshot.setCategoryArchived(id: id, bookID: category.bookID, archived: !category.isArchived)
             case .tag:
                 guard let index = snapshot.tags.firstIndex(where: { $0.id == id }) else { return }
                 snapshot.tags[index].isArchived.toggle()
@@ -104,6 +101,22 @@ final class BudgetStore: ObservableObject {
             }
         }
     }
+    @discardableResult
+    func saveCategory(id: UUID? = nil, bookID: UUID, kind: EntryKind, name: String, parentID: UUID?) -> UUID? {
+        var savedID: UUID?
+        let success = update { snapshot in
+            savedID = try snapshot.saveCategory(id: id, bookID: bookID, kind: kind, name: name, parentID: parentID)
+        }
+        return success ? savedID : nil
+    }
+    func moveCategories(bookID: UUID, kind: EntryKind, parentID: UUID?, from: IndexSet, to: Int) {
+        update { snapshot in
+            var ids = snapshot.orderedCategories(bookID: bookID, kind: kind, parentID: parentID).map(\.id)
+            ids.move(fromOffsets: from, toOffset: to)
+            try snapshot.reorderCategories(bookID: bookID, kind: kind, parentID: parentID, ids: ids)
+        }
+    }
+
 }
 
 enum MasterType: String, Identifiable { case category = "カテゴリ", tag = "タグ", account = "入出金元"; var id: String { rawValue } }

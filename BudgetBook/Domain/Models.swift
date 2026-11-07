@@ -76,6 +76,7 @@ struct BudgetSnapshot: Codable, Equatable {
             for kind in [EntryKind.expense, .income] {
                 state.categories.append(BudgetCategory(bookID: book.id, name: "未分類", kind: kind, isUncategorized: true))
             }
+            try? state.addBasicCategories(bookID: book.id)
         }
         state.selectedBookID = state.books.first?.id
         return state
@@ -162,5 +163,128 @@ enum BudgetSummary {
         // 未選択は全件という仮ルール。元配列の各取引を一度だけ評価する。
         guard !tags.isEmpty else { return entries }
         return entries.filter { matchAll ? tags.isSubset(of: $0.tagIDs) : !$0.tagIDs.isDisjoint(with: tags) }
+    }
+}
+
+
+extension BudgetSnapshot {
+    /// 同じ階層の中で並べる。旧データのorderがすべて0でも配列順を維持する。
+    func orderedCategories(bookID: UUID, kind: EntryKind, parentID: UUID?) -> [BudgetCategory] {
+        categories.enumerated().filter {
+            $0.element.bookID == bookID && $0.element.kind == kind && $0.element.parentID == parentID
+        }.sorted {
+            $0.element.order == $1.element.order ? $0.offset < $1.offset : $0.element.order < $1.element.order
+        }.map(\.element)
+    }
+
+    @discardableResult
+    mutating func saveCategory(id: UUID? = nil, bookID: UUID, kind: EntryKind, name: String, parentID: UUID?) throws -> UUID {
+        guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
+        guard kind != .transfer else { throw BudgetError.invalidCategory }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw BudgetError.emptyName }
+        let existing = id.flatMap { id in categories.first { $0.id == id } }
+        if id != nil {
+            guard let existing, existing.bookID == bookID, existing.kind == kind else { throw BudgetError.invalidCategory }
+            guard !existing.isUncategorized else { throw BudgetError.protectedItem }
+            // 編集では大小の階層は維持する。小カテゴリの所属変更のみ対応。
+            guard (existing.parentID == nil) == (parentID == nil) else { throw BudgetError.invalidCategory }
+        }
+        if let parentID {
+            guard let parent = categories.first(where: { $0.id == parentID }),
+                  parent.id != id, parent.bookID == bookID, parent.kind == kind,
+                  parent.parentID == nil, !parent.isUncategorized,
+                  !parent.isArchived || existing?.parentID == parentID else { throw BudgetError.invalidCategory }
+        }
+        guard !categories.contains(where: {
+            $0.id != id && $0.bookID == bookID && $0.kind == kind && $0.parentID == parentID && $0.name == name
+        }) else { throw BudgetError.duplicateName }
+        if let index = categories.firstIndex(where: { $0.id == id }) {
+            if categories[index].parentID != parentID {
+                categories[index].order = (orderedCategories(bookID: bookID, kind: kind, parentID: parentID).last?.order ?? -1) + 1
+            }
+            categories[index].name = name
+            categories[index].parentID = parentID
+            return categories[index].id
+        }
+        let newCategory = BudgetCategory(bookID: bookID, name: name, kind: kind, parentID: parentID,
+                                         order: (orderedCategories(bookID: bookID, kind: kind, parentID: parentID).last?.order ?? -1) + 1)
+        categories.append(newCategory)
+        return newCategory.id
+    }
+
+    mutating func setCategoryArchived(id: UUID, bookID: UUID, archived: Bool) throws {
+        guard let index = categories.firstIndex(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidCategory }
+        guard !categories[index].isUncategorized else { throw BudgetError.protectedItem }
+        // 子自身のアーカイブ状態には触れず、親の状態から利用可否を判定する。
+        categories[index].isArchived = archived
+    }
+
+    mutating func reorderCategories(bookID: UUID, kind: EntryKind, parentID: UUID?, ids: [UUID]) throws {
+        let siblings = orderedCategories(bookID: bookID, kind: kind, parentID: parentID)
+        guard ids.count == siblings.count, Set(ids).count == ids.count, Set(ids) == Set(siblings.map(\.id)) else { throw BudgetError.invalidCategory }
+        for (position, id) in ids.enumerated() {
+            if let index = categories.firstIndex(where: { $0.id == id }) { categories[index].order = position }
+        }
+    }
+
+    /// 常に現在の分類をたどるため、名称・所属変更後は過去取引にも即時反映する。
+    func categoryAmounts(bookID: UUID, kind: EntryKind, entries: [BudgetEntry], parentID: UUID? = nil) -> [UUID: Int64] {
+        var result: [UUID: Int64] = [:]
+        for entry in entries where entry.bookID == bookID && entry.kind == kind && entry.includedInTotals && kind != .transfer {
+            guard let category = categories.first(where: { $0.id == entry.categoryID && $0.bookID == bookID && $0.kind == kind }) else { continue }
+            if let parentID {
+                guard category.id == parentID || category.parentID == parentID else { continue }
+                result[category.id, default: 0] += entry.amount
+            } else { result[category.parentID ?? category.id, default: 0] += entry.amount }
+        }
+        return result
+    }
+}
+
+
+struct BasicCategoryGroup: Identifiable {
+    let name: String
+    let children: [String]
+    var id: String { name }
+    static func groups(for kind: EntryKind) -> [Self] {
+        switch kind {
+        case .expense:
+            return [
+                Self(name: "食費", children: ["食料品", "外食", "カフェ"]),
+                Self(name: "日用品", children: ["生活用品", "消耗品"]),
+                Self(name: "交通費", children: ["電車・バス", "タクシー", "ガソリン"]),
+                Self(name: "住居費", children: ["家賃", "住宅関連"]),
+                Self(name: "水道光熱費", children: ["電気", "ガス", "水道"]),
+                Self(name: "通信費", children: ["携帯電話", "インターネット"]),
+                Self(name: "医療・健康", children: ["診療", "薬"]),
+                Self(name: "趣味・娯楽", children: ["趣味", "レジャー"]),
+                Self(name: "その他支出", children: [])
+            ]
+        case .income:
+            return [Self(name: "給与", children: ["給料", "賞与"]), Self(name: "その他収入", children: [])]
+        case .transfer: return []
+        }
+    }
+}
+
+extension BudgetSnapshot {
+    /// 再実行しても同じ場所に重複を作らず、既存の名称・順番・アーカイブ状態を維持する。
+    mutating func addBasicCategories(bookID: UUID) throws {
+        guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
+        for kind in [EntryKind.expense, .income] {
+            for group in BasicCategoryGroup.groups(for: kind) {
+                let parentID: UUID
+                if let existing = categories.first(where: { $0.bookID == bookID && $0.kind == kind && $0.parentID == nil && $0.name == group.name }) {
+                    guard !existing.isArchived, !existing.isUncategorized else { continue }
+                    parentID = existing.id
+                } else { parentID = try saveCategory(bookID: bookID, kind: kind, name: group.name, parentID: nil) }
+                for child in group.children {
+                    if !categories.contains(where: { $0.bookID == bookID && $0.kind == kind && $0.parentID == parentID && $0.name == child }) {
+                        try saveCategory(bookID: bookID, kind: kind, name: child, parentID: parentID)
+                    }
+                }
+            }
+        }
     }
 }

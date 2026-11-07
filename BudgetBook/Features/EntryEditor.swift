@@ -16,6 +16,8 @@ struct EntryEditor: View {
     @State private var memo: String
     @State private var error: String?
     @State private var master: MasterType?
+    @State private var choosingCategory = false
+    @State private var didInitialize = false
     init(bookID: UUID, existing: BudgetEntry? = nil) {
         self.bookID = bookID; self.existing = existing
         _kind = State(initialValue: existing?.kind ?? .expense)
@@ -38,13 +40,16 @@ struct EntryEditor: View {
             }
             if kind != .transfer {
                 Section("カテゴリ") {
-                    Picker("カテゴリ", selection: $categoryID) {
-                        Text("未分類").tag(nil as UUID?)
-                        ForEach(store.categories.filter { $0.kind == kind && !$0.isUncategorized && (store.state.isCategoryAvailable($0) || existing?.categoryID == $0.id) }) { item in
-                            Text(store.categoryTitle(item)).tag(Optional(item.id))
+                    Button { choosingCategory = true } label: {
+                        HStack {
+                            Text("カテゴリ")
+                            Spacer()
+                            Text(store.categories.first(where: { $0.id == categoryID }).map(store.categoryTitle) ?? "未分類")
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                         }
-                    }
-                    Button("カテゴリを追加", systemImage: "plus") { master = .category }
+                    }.tint(.primary)
+
                 }
             }
             Section("入出金元") {
@@ -70,8 +75,18 @@ struct EntryEditor: View {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
         }
-        .onAppear { if existing == nil { resetAccounts() } }
+        .onAppear {
+            guard !didInitialize else { return }; didInitialize = true
+            if existing == nil { resetAccounts() }
+        }
         .onChange(of: kind) { _, _ in categoryID = nil; resetAccounts(); included = true }
+        .sheet(isPresented: $choosingCategory) {
+            NavigationStack {
+                CategorySelectionView(bookID: bookID, kind: kind, currentID: categoryID ?? existing?.categoryID) { id in
+                    categoryID = id; choosingCategory = false
+                }
+            }
+        }
         .sheet(item: $master) { item in NavigationStack { MasterAddView(type: item, initialKind: kind == .income ? .income : .expense) } }
     }
     private func accountPicker(_ title: String, selection: Binding<UUID?>) -> some View {
