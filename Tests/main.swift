@@ -107,4 +107,72 @@ try repository.save(catalog)
 let reloaded = try repository.load()!
 expect(reloaded == catalog, "名称・所属・並び順・アーカイブと過去取引を保存して再読込")
 expect(reloaded.orderedCategories(bookID: catalogBook, kind: .expense, parentID: destinationRoot).map(\.id) == reversedIDs, "再起動後も小カテゴリの表示順を維持")
+
+
+
+// タグ・入出金元の関連保護と旧形式互換性。
+var masters = BudgetSnapshot.initial()
+let masterBook = masters.books[0].id
+let foreignBook = masters.books[1].id
+let masterWallet = masters.accounts.first { $0.bookID == masterBook && $0.isWallet }!.id
+let bank = try masters.saveAccount(bookID: masterBook, name: "銀行")
+let card = try masters.saveAccount(bookID: masterBook, name: "カード")
+let travel = try masters.saveTag(bookID: masterBook, name: "旅行")
+let archivedTravel = try masters.saveTag(bookID: masterBook, name: "過去タグ")
+masters.books[0].hiddenTagIDs = [travel]
+let taggedEntry = try masters.validated(BudgetEntry(bookID: masterBook, kind: .expense, amount: 900, date: Date(), sourceID: bank, tagIDs: [travel], includedInTotals: false))
+masters.entries = [taggedEntry]
+try masters.saveTag(id: travel, bookID: masterBook, name: "  旅費  ")
+expect(masters.tags.first { $0.id == travel }?.name == "旅費", "タグ名称の前後空白を除去")
+expect(masters.entries == [taggedEntry] && masters.books[0].hiddenTagIDs == [travel], "タグ名称変更で取引関連・表示設定を維持")
+expect(BudgetSummary.matchingTags(masters.entries, tags: [travel], matchAll: true).count == 1, "改名後もIDで検索する")
+try masters.setTagArchived(id: archivedTravel, bookID: masterBook, archived: true)
+let beforeTagFailure = masters
+rejects("アーカイブ済みと同名タグの新規作成を禁止") { try masters.saveTag(bookID: masterBook, name: "過去タグ") }
+rejects("アーカイブ済みと同名への名称変更を禁止") { try masters.saveTag(id: travel, bookID: masterBook, name: "過去タグ") }
+expect(masters == beforeTagFailure, "タグ重複エラーで元データを維持")
+try masters.setTagArchived(id: travel, bookID: masterBook, archived: true)
+expect(masters.entries[0].tagIDs.contains(travel), "タグアーカイブで関連を残す")
+rejects("アーカイブ済みタグを新規取引へ付与しない") { _ = try masters.validated(BudgetEntry(bookID: masterBook, kind: .expense, amount: 20, date: Date(), sourceID: bank, tagIDs: [travel])) }
+_ = try masters.validated(taggedEntry, previous: taggedEntry)
+expect(true, "編集時に元のアーカイブ済みタグを保持できる")
+try masters.setTagArchived(id: travel, bookID: masterBook, archived: false)
+expect(masters.tags.first { $0.id == travel }?.isArchived == false && masters.tags.count == 2, "復元時は元IDを再利用して二重作成しない")
+_ = try masters.saveTag(bookID: foreignBook, name: "旅費")
+expect(true, "別家計簿で同名タグを許可")
+rejects("タグ名称変更で家計簿越境を拒否") { try masters.saveTag(id: travel, bookID: foreignBook, name: "変更") }
+rejects("タグの空名を拒否") { try masters.saveTag(bookID: masterBook, name: "  ") }
+try masters.saveAccount(id: bank, bookID: masterBook, name: "生活口座")
+expect(masters.accounts.first { $0.id == bank }?.name == "生活口座" && masters.entries == [taggedEntry], "入出金元改名で過去取引ID・金額を保持")
+let beforeWalletFailure = masters
+rejects("標準お財布の名称変更を禁止") { try masters.saveAccount(id: masterWallet, bookID: masterBook, name: "変更") }
+rejects("標準お財布のアーカイブを禁止") { try masters.setAccountArchived(id: masterWallet, bookID: masterBook, archived: true) }
+expect(masters == beforeWalletFailure, "標準お財布の保護に失敗しても元データを維持")
+rejects("入出金元の空名を拒否") { try masters.saveAccount(bookID: masterBook, name: "\n") }
+rejects("入出金元改名で家計簿越境を拒否") { try masters.saveAccount(id: bank, bookID: foreignBook, name: "変更") }
+try masters.setAccountArchived(id: bank, bookID: masterBook, archived: true)
+expect(masters.entries[0].sourceID == bank, "入出金元アーカイブで過去の関連を維持")
+rejects("アーカイブ済み入出金元を新規選択しない") { _ = try masters.validated(BudgetEntry(bookID: masterBook, kind: .expense, amount: 20, date: Date(), sourceID: bank)) }
+_ = try masters.validated(taggedEntry, previous: taggedEntry)
+expect(true, "過去取引編集は元のアーカイブ済み入出金元を保持可能")
+try masters.setAccountArchived(id: bank, bookID: masterBook, archived: false)
+let accountOrder = [card, masterWallet, bank]
+try masters.reorderAccounts(bookID: masterBook, ids: accountOrder)
+expect(masters.orderedAccounts(bookID: masterBook).map(\.id) == accountOrder, "入出金元の並べ替え")
+rejects("入出金元の並べ替えに重複IDを混ぜない") { try masters.reorderAccounts(bookID: masterBook, ids: [bank, bank, card]) }
+let foreignAccount = masters.accounts.first { $0.bookID == foreignBook }!.id
+rejects("入出金元の並べ替えに別家計簿を混ぜない") { try masters.reorderAccounts(bookID: masterBook, ids: [bank, card, foreignAccount]) }
+let afterReorder = try masters.saveAccount(bookID: masterBook, name: "電子マネー")
+expect(masters.orderedAccounts(bookID: masterBook).last?.id == afterReorder, "並べ替え後に新規項目は末尾へ追加")
+try repository.save(masters)
+let savedMasters = try repository.load()!
+expect(savedMasters == masters, "タグの名称・関連・アーカイブと入出金元順序をファイル往復で維持")
+// 旧JSONはorderを持たない。旧配列順と新規追加位置が崩れないことを確認。
+var legacyObject = try JSONSerialization.jsonObject(with: JSONEncoder().encode(masters)) as! [String: Any]
+var legacyAccounts = legacyObject["accounts"] as! [[String: Any]]
+for index in legacyAccounts.indices { legacyAccounts[index].removeValue(forKey: "order") }
+legacyObject["accounts"] = legacyAccounts
+let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
+let legacyState = try JSONDecoder().decode(BudgetSnapshot.self, from: legacyData)
+expect(legacyState.orderedAccounts(bookID: masterBook).map(\.id) == masters.accounts.filter { $0.bookID == masterBook }.map(\.id), "旧JSONの並び順なしデータを配列順で読み込める")
 print("Passed \(checks) domain checks")

@@ -21,7 +21,7 @@ final class BudgetStore: ObservableObject {
     }
     var bookID: UUID? { state.selectedBookID }
     var currentBook: HouseholdBook? { state.books.first { $0.id == bookID } }
-    var accounts: [MoneyAccount] { state.accounts.filter { $0.bookID == bookID } }
+    var accounts: [MoneyAccount] { bookID.map { state.orderedAccounts(bookID: $0) } ?? [] }
     var categories: [BudgetCategory] { state.categories.filter { $0.bookID == bookID }.sorted { $0.order < $1.order } }
     var tags: [BudgetTag] { state.tags.filter { $0.bookID == bookID } }
     var entries: [BudgetEntry] { state.entries.filter { $0.bookID == bookID }.sorted { $0.date > $1.date } }
@@ -70,22 +70,6 @@ final class BudgetStore: ObservableObject {
             snapshot.selectedBookID = book.id
         }
     }
-    func addMaster(name: String, type: MasterType, kind: EntryKind = .expense, parentID: UUID? = nil) {
-        guard let bookID else { return }
-        update { snapshot in
-            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { throw BudgetError.emptyName }
-            switch type {
-            case .category:
-                try snapshot.saveCategory(bookID: bookID, kind: kind, name: name, parentID: parentID)
-            case .tag:
-                guard !snapshot.tags.contains(where: { $0.bookID == bookID && $0.name == name }) else { throw BudgetError.duplicateName }
-                snapshot.tags.append(BudgetTag(bookID: bookID, name: name))
-            case .account:
-                snapshot.accounts.append(MoneyAccount(bookID: bookID, name: name))
-            }
-        }
-    }
     func toggleArchive(_ id: UUID, type: MasterType) {
         update { snapshot in
             switch type {
@@ -93,11 +77,11 @@ final class BudgetStore: ObservableObject {
                 guard let category = snapshot.categories.first(where: { $0.id == id && $0.bookID == self.bookID }) else { throw BudgetError.invalidCategory }
                 try snapshot.setCategoryArchived(id: id, bookID: category.bookID, archived: !category.isArchived)
             case .tag:
-                guard let index = snapshot.tags.firstIndex(where: { $0.id == id }) else { return }
-                snapshot.tags[index].isArchived.toggle()
+                guard let tag = snapshot.tags.first(where: { $0.id == id && $0.bookID == self.bookID }) else { throw BudgetError.invalidTag }
+                try snapshot.setTagArchived(id: id, bookID: tag.bookID, archived: !tag.isArchived)
             case .account:
-                guard let index = snapshot.accounts.firstIndex(where: { $0.id == id }), !snapshot.accounts[index].isWallet else { throw BudgetError.protectedItem }
-                snapshot.accounts[index].isArchived.toggle()
+                guard let account = snapshot.accounts.first(where: { $0.id == id && $0.bookID == self.bookID }) else { throw BudgetError.invalidAccount }
+                try snapshot.setAccountArchived(id: id, bookID: account.bookID, archived: !account.isArchived)
             }
         }
     }
@@ -114,6 +98,26 @@ final class BudgetStore: ObservableObject {
             var ids = snapshot.orderedCategories(bookID: bookID, kind: kind, parentID: parentID).map(\.id)
             ids.move(fromOffsets: from, toOffset: to)
             try snapshot.reorderCategories(bookID: bookID, kind: kind, parentID: parentID, ids: ids)
+        }
+    }
+
+    @discardableResult
+    func saveMaster(id: UUID? = nil, bookID: UUID, name: String, type: MasterType) -> UUID? {
+        var savedID: UUID?
+        let saved = update { snapshot in
+            switch type {
+            case .tag: savedID = try snapshot.saveTag(id: id, bookID: bookID, name: name)
+            case .account: savedID = try snapshot.saveAccount(id: id, bookID: bookID, name: name)
+            case .category: throw BudgetError.invalidCategory
+            }
+        }
+        return saved ? savedID : nil
+    }
+    func moveAccounts(bookID: UUID, from: IndexSet, to: Int) {
+        update { snapshot in
+            var ids = snapshot.orderedAccounts(bookID: bookID).map(\.id)
+            ids.move(fromOffsets: from, toOffset: to)
+            try snapshot.reorderAccounts(bookID: bookID, ids: ids)
         }
     }
 

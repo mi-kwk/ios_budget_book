@@ -40,72 +40,178 @@ struct BooksView: View {
         }.navigationTitle("家計簿の管理")
     }
 }
+
+struct MasterEditTarget: Identifiable {
+    let id: UUID
+    let name: String
+    let archived: Bool
+}
+
 struct MasterListView: View {
     @EnvironmentObject private var store: BudgetStore
     let type: MasterType
     @State private var adding = false
+    @State private var editing: MasterEditTarget?
     var body: some View {
         List {
             Section {
-                Text("項目は削除せずアーカイブします。過去の取引は残ります。").font(.caption).foregroundStyle(.secondary)
-                switch type {
-                case .category:
-                    ForEach(store.categories) { item in
-                        row("\(item.kind.title)・\(store.categoryTitle(item))", id: item.id, archived: item.isArchived, protected: item.isUncategorized)
+                Text("項目を開くと名前を変更できます。アーカイブしても過去の取引は残ります。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Section(type.rawValue) {
+                if type == .account {
+                    ForEach(store.accounts) { account in
+                        if account.isWallet {
+                            HStack { Text(account.name); Spacer(); Label("標準", systemImage: "lock").font(.caption).foregroundStyle(.secondary) }
+                        } else {
+                            masterRow(id: account.id, name: account.name, archived: account.isArchived)
+                        }
+                    }.onMove { from, to in
+                        if let bookID = store.bookID { store.moveAccounts(bookID: bookID, from: from, to: to) }
                     }
-                case .tag:
-                    ForEach(store.tags) { item in row(item.name, id: item.id, archived: item.isArchived) }
-                case .account:
-                    ForEach(store.accounts) { item in row(item.name, id: item.id, archived: item.isArchived, protected: item.isWallet) }
+                } else {
+                    ForEach(store.tags) { tag in masterRow(id: tag.id, name: tag.name, archived: tag.isArchived) }
+                    if store.tags.isEmpty { Text("右上の＋からタグを追加できます。").foregroundStyle(.secondary) }
                 }
             }
-            Section { Text("名称変更・階層移動・並べ替えは後続実装です。").font(.caption).foregroundStyle(.secondary) }
+            if type == .account {
+                Section { Text("「編集」で入出金元の表示順を変更できます。標準のお財布は名称変更・削除・アーカイブできません。残高は計算しません。").font(.caption).foregroundStyle(.secondary) }
+            }
         }.navigationTitle(type.rawValue)
-            .toolbar { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("追加").disabled(!store.canWrite) }
-            .sheet(isPresented: $adding) { NavigationStack { MasterAddView(type: type) } }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { if type == .account { EditButton().disabled(!store.canWrite) } }
+                ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("追加").disabled(!store.canWrite) }
+            }
+            .sheet(isPresented: $adding) {
+                if let bookID = store.bookID { NavigationStack { MasterEditorView(type: type, bookID: bookID) } }
+            }
+            .sheet(item: $editing) { target in
+                if let bookID = store.bookID { NavigationStack { MasterEditorView(type: type, bookID: bookID, existing: target) } }
+            }
     }
-    private func row(_ name: String, id: UUID, archived: Bool, protected: Bool = false) -> some View {
-        HStack {
-            VStack(alignment: .leading) { Text(name); if archived { Text("アーカイブ済み").font(.caption).foregroundStyle(.secondary) } }
-            Spacer()
-            if protected { Image(systemName: "lock").foregroundStyle(.secondary).accessibilityLabel("標準項目") }
-            else { Button(archived ? "復元" : "アーカイブ") { store.toggleArchive(id, type: type) }.font(.caption).buttonStyle(.borderless) }
-        }
+    private func masterRow(id: UUID, name: String, archived: Bool) -> some View {
+        Button { editing = MasterEditTarget(id: id, name: name, archived: archived) } label: {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(name)
+                    if archived { Text("アーカイブ済み").font(.caption).foregroundStyle(.secondary) }
+                }
+                Spacer()
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+            }
+        }.tint(.primary).disabled(!store.canWrite)
     }
 }
-struct MasterAddView: View {
+
+struct MasterEditorView: View {
     @EnvironmentObject private var store: BudgetStore
     @Environment(\.dismiss) private var dismiss
     let type: MasterType
-    @State private var name = ""
-    @State private var kind: EntryKind
-    @State private var parentID: UUID?
+    let bookID: UUID
+    let existing: MasterEditTarget?
+    @State private var name: String
     @State private var error: String?
-    init(type: MasterType, initialKind: EntryKind = .expense) { self.type = type; _kind = State(initialValue: initialKind) }
+    @State private var confirmingArchive = false
+    init(type: MasterType, bookID: UUID, existing: MasterEditTarget? = nil) {
+        self.type = type; self.bookID = bookID; self.existing = existing
+        _name = State(initialValue: existing?.name ?? "")
+    }
+    private var archivedMatch: BudgetTag? {
+        guard type == .tag, existing == nil else { return nil }
+        let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return store.state.tags.first { $0.bookID == bookID && $0.name == cleaned && $0.isArchived }
+    }
     var body: some View {
         Form {
-            TextField("名前", text: $name)
-            if type == .category {
-                Picker("収支種別", selection: $kind) { Text("支出").tag(EntryKind.expense); Text("収入").tag(EntryKind.income) }
-                    .onChange(of: kind) { _, _ in parentID = nil }
-                Picker("所属", selection: $parentID) {
-                    Text("大カテゴリとして追加").tag(nil as UUID?)
-                    ForEach(store.categories.filter { $0.kind == kind && $0.parentID == nil && !$0.isArchived && !$0.isUncategorized }) { item in Text(item.name).tag(Optional(item.id)) }
+            Section("名前") { TextField("名前", text: $name) }
+            if type == .tag {
+                Section { Text("同じ家計簿では、アーカイブ済みも含めて同じ名前は使えません。名称を変更しても過去の取引との関連や表示設定は保持されます。").font(.caption).foregroundStyle(.secondary) }
+            } else {
+                Section { Text("名称を変更すると過去の取引にも反映します。金額は変更されません。").font(.caption).foregroundStyle(.secondary) }
+            }
+            if let match = archivedMatch {
+                Section("同名のアーカイブ済みタグがあります") {
+                    Button("既存タグを復元して使用する") {
+                        perform { try $0.setTagArchived(id: match.id, bookID: bookID, archived: false) }
+                    }
                 }
             }
-            if let error { Text(error).foregroundStyle(.red) }
-        }.navigationTitle("\(type.rawValue)を追加")
+            if let existing {
+                Section {
+                    Button(existing.archived ? "復元" : "アーカイブ") { confirmingArchive = true }.disabled(!store.canWrite)
+                    Text("この操作では編集中の名前は保存しません。アーカイブ済みの項目は新しい取引では選択できません。").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if let error { Section { Text(error).foregroundStyle(.red) } }
+        }.navigationTitle("\(type.rawValue)を\(existing == nil ? "追加" : "編集")")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("追加") {
-                        store.addMaster(name: name, type: type, kind: kind, parentID: parentID)
-                        if let message = store.errorMessage { error = message; store.errorMessage = nil } else { dismiss() }
+                    Button("保存") {
+                        if store.saveMaster(id: existing?.id, bookID: bookID, name: name, type: type) != nil { dismiss() }
+                        else { captureError() }
+                    }.disabled(!store.canWrite || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || archivedMatch != nil)
+                }
+            }
+            .confirmationDialog(existing?.archived == true ? "この項目を復元しますか？" : "新しい取引の選択候補から外します。過去の取引は残ります。", isPresented: $confirmingArchive, titleVisibility: .visible) {
+                if let existing {
+                    Button(existing.archived ? "復元" : "アーカイブ") {
+                        perform { snapshot in
+                            if type == .tag { try snapshot.setTagArchived(id: existing.id, bookID: bookID, archived: !existing.archived) }
+                            else { try snapshot.setAccountArchived(id: existing.id, bookID: bookID, archived: !existing.archived) }
+                        }
                     }
                 }
             }
     }
+    private func perform(_ change: (inout BudgetSnapshot) throws -> Void) {
+        if store.update(change) { dismiss() } else { captureError() }
+    }
+    private func captureError() { error = store.errorMessage ?? "保存できませんでした。"; store.errorMessage = nil }
 }
+
+struct AccountSelectionView: View {
+    @EnvironmentObject private var store: BudgetStore
+    @Environment(\.dismiss) private var dismiss
+    let bookID: UUID
+    let title: String
+    let currentID: UUID?
+    let previousID: UUID?
+    let allowsUnspecified: Bool
+    let onSelect: (UUID?) -> Void
+    @State private var adding = false
+    var body: some View {
+        List {
+            if allowsUnspecified { Section { option(name: "未指定", id: nil) } }
+            Section("入出金元を選択") {
+                ForEach(store.state.orderedAccounts(bookID: bookID).filter { !$0.isArchived }) { account in
+                    option(name: account.name, id: account.id)
+                }
+            }
+            if let previous = store.state.accounts.first(where: { $0.bookID == bookID && $0.id == previousID && $0.isArchived }) {
+                Section("元の取引の入出金元") {
+                    option(name: previous.name + "（アーカイブ済み）", id: previous.id)
+                    Text("元の取引で使用していた項目は保持できます。").font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Section {
+                Text(allowsUnspecified ? "振替元・振替先の少なくとも片方を指定してください。同じ項目同士には振替できません。" : "収入・支出では入出金元が必須です。")
+                Text("右上の＋から追加できます。追加後、一覧から選択してください。")
+            }.font(.caption).foregroundStyle(.secondary)
+        }.navigationTitle(title)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("入出金元を追加").disabled(!store.canWrite) }
+            }
+            .sheet(isPresented: $adding) { NavigationStack { MasterEditorView(type: .account, bookID: bookID) } }
+    }
+    private func option(name: String, id: UUID?) -> some View {
+        Button { onSelect(id) } label: {
+            HStack { Text(name); Spacer(); if currentID == id { Image(systemName: "checkmark") } }
+        }
+    }
+}
+
 struct TagDisplayView: View {
     @EnvironmentObject private var store: BudgetStore
     var body: some View {

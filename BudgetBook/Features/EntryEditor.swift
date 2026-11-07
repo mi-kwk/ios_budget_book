@@ -16,6 +16,7 @@ struct EntryEditor: View {
     @State private var memo: String
     @State private var error: String?
     @State private var master: MasterType?
+    @State private var choosingAccount: AccountSide?
     @State private var choosingCategory = false
     @State private var didInitialize = false
     init(bookID: UUID, existing: BudgetEntry? = nil) {
@@ -53,10 +54,9 @@ struct EntryEditor: View {
                 }
             }
             Section("入出金元") {
-                if kind != .income { accountPicker("出金元", selection: $sourceID) }
-                if kind != .expense { accountPicker("入金先", selection: $destinationID) }
+                if kind != .income { accountButton("出金元", id: sourceID, side: .source) }
+                if kind != .expense { accountButton("入金先", id: destinationID, side: .destination) }
                 if kind == .transfer { Text("片方のみの指定も可能です。残高は計算しません。").font(.caption).foregroundStyle(.secondary) }
-                Button("入出金元を追加", systemImage: "plus") { master = .account }
             }
             Section("タグ（任意）") {
                 ForEach(store.tags.filter { !$0.isArchived || tags.contains($0.id) }) { tag in
@@ -87,13 +87,27 @@ struct EntryEditor: View {
                 }
             }
         }
-        .sheet(item: $master) { item in NavigationStack { MasterAddView(type: item, initialKind: kind == .income ? .income : .expense) } }
-    }
-    private func accountPicker(_ title: String, selection: Binding<UUID?>) -> some View {
-        Picker(title, selection: selection) {
-            Text("未指定").tag(nil as UUID?)
-            ForEach(store.accounts.filter { !$0.isArchived || $0.id == existing?.sourceID || $0.id == existing?.destinationID }) { account in Text(account.name).tag(Optional(account.id)) }
+        .sheet(item: $master) { item in NavigationStack { MasterEditorView(type: item, bookID: bookID) } }
+        .sheet(item: $choosingAccount) { side in
+            NavigationStack {
+                AccountSelectionView(bookID: bookID, title: side == .source ? "出金元" : "入金先",
+                                     currentID: side == .source ? sourceID : destinationID,
+                                     previousID: side == .source ? existing?.sourceID : existing?.destinationID,
+                                     allowsUnspecified: kind == .transfer) { id in
+                    if side == .source { sourceID = id } else { destinationID = id }
+                    choosingAccount = nil
+                }
+            }
         }
+    }
+    private func accountButton(_ title: String, id: UUID?, side: AccountSide) -> some View {
+        Button { choosingAccount = side } label: {
+            HStack {
+                Text(title); Spacer()
+                Text(store.accountName(id)).foregroundStyle(.secondary)
+                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+            }
+        }.tint(.primary)
     }
     private func resetAccounts() {
         let wallet = store.accounts.first { $0.isWallet }?.id
@@ -107,3 +121,5 @@ struct EntryEditor: View {
         if store.saveEntry(entry) { dismiss() } else { error = store.errorMessage }
     }
 }
+
+enum AccountSide: String, Identifiable { case source, destination; var id: String { rawValue } }

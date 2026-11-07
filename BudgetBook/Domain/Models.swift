@@ -23,6 +23,8 @@ struct MoneyAccount: Identifiable, Codable, Equatable {
     var name: String
     var isWallet = false
     var isArchived = false
+    // Optionalで旧JSON（並び順なし）をそのまま読める。
+    var order: Int? = nil
 }
 
 struct BudgetCategory: Identifiable, Codable, Equatable {
@@ -285,6 +287,60 @@ extension BudgetSnapshot {
                     }
                 }
             }
+        }
+    }
+}
+
+
+extension BudgetSnapshot {
+    func orderedAccounts(bookID: UUID) -> [MoneyAccount] {
+        accounts.enumerated().filter { $0.element.bookID == bookID }.sorted {
+            let left = $0.element.order ?? 0, right = $1.element.order ?? 0
+            return left == right ? $0.offset < $1.offset : left < right
+        }.map(\.element)
+    }
+    @discardableResult
+    mutating func saveTag(id: UUID? = nil, bookID: UUID, name: String) throws -> UUID {
+        guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw BudgetError.emptyName }
+        if let id { guard tags.contains(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidTag } }
+        guard !tags.contains(where: { $0.bookID == bookID && $0.name == name && $0.id != id }) else { throw BudgetError.duplicateName }
+        if let index = tags.firstIndex(where: { $0.id == id }) { tags[index].name = name; return tags[index].id }
+        let tag = BudgetTag(bookID: bookID, name: name)
+        tags.append(tag)
+        return tag.id
+    }
+    @discardableResult
+    mutating func saveAccount(id: UUID? = nil, bookID: UUID, name: String) throws -> UUID {
+        guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw BudgetError.emptyName }
+        if let id {
+            guard let index = accounts.firstIndex(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidAccount }
+            guard !accounts[index].isWallet else { throw BudgetError.protectedItem }
+            accounts[index].name = name
+            return id
+        }
+        // 一般項目の同名制約は未確定のため、従来どおり同名は許可。
+        let account = MoneyAccount(bookID: bookID, name: name, order: (orderedAccounts(bookID: bookID).last?.order ?? 0) + 1)
+        accounts.append(account)
+        return account.id
+    }
+    mutating func setTagArchived(id: UUID, bookID: UUID, archived: Bool) throws {
+        guard let index = tags.firstIndex(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidTag }
+        tags[index].isArchived = archived
+    }
+    mutating func setAccountArchived(id: UUID, bookID: UUID, archived: Bool) throws {
+        guard let index = accounts.firstIndex(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidAccount }
+        guard !accounts[index].isWallet else { throw BudgetError.protectedItem }
+        accounts[index].isArchived = archived
+    }
+    mutating func reorderAccounts(bookID: UUID, ids: [UUID]) throws {
+        let items = orderedAccounts(bookID: bookID)
+        guard Set(ids).count == ids.count, ids.count == items.count, Set(ids) == Set(items.map(\.id)) else { throw BudgetError.invalidAccount }
+        for (position, id) in ids.enumerated() {
+            if let index = accounts.firstIndex(where: { $0.id == id }) { accounts[index].order = position }
         }
     }
 }
