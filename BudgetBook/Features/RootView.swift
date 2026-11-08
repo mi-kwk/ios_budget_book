@@ -213,6 +213,8 @@ struct SummaryView: View {
     @EnvironmentObject private var store: BudgetStore
     @State private var month = Date()
     @State private var kind = EntryKind.expense
+    @State private var expandedTags = false
+    private var visibleTags: [BudgetTag] { store.tags.filter { !(store.currentBook?.hiddenTagIDs.contains($0.id) ?? false) } }
     var body: some View {
         List {
             MonthPicker(month: $month)
@@ -220,17 +222,28 @@ struct SummaryView: View {
             if store.currentBook?.showsTagSummary == true {
                 Section("タグ別集計") {
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading) {
-                        ForEach(store.tags.filter { !(store.currentBook?.hiddenTagIDs.contains($0.id) ?? false) }) { tag in
+                        ForEach(expandedTags ? visibleTags : Array(visibleTags.prefix(4))) { tag in
                             let totals = BudgetSummary.totals(store.entries(in: month).filter { $0.tagIDs.contains(tag.id) }, includeExcluded: true)
+                            NavigationLink {
+                                List {
+                                    TotalsView(totals: totals)
+                                    LabeledContent("振替", value: yen(totals.transfer))
+                                    ForEach(store.entries(in: month).filter { $0.tagIDs.contains(tag.id) }) { entry in
+                                        NavigationLink { EntryDetail(entryID: entry.id) } label: { EntryRow(entry: entry) }
+                                    }
+                                }.navigationTitle(tag.name)
+                            } label: {
                             VStack(alignment: .leading, spacing: 6) {
                                 Text(tag.name).font(.headline)
                                 Text("収入 \(yen(totals.income))")
                                 Text("支出 \(yen(totals.expense))")
                                 Text("振替 \(yen(totals.transfer))")
                             }.font(.caption).padding(10).frame(maxWidth: .infinity, alignment: .leading).background(.teal.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
+                            }.buttonStyle(.plain)
                         }
                     }
-                    if store.tags.isEmpty { Text("タグは設定から追加できます。").foregroundStyle(.secondary) }
+                    if visibleTags.count > 4 { Button(expandedTags ? "閉じる" : "もっと見る") { expandedTags.toggle() } }
+                    if visibleTags.isEmpty { Text("表示するタグは設定の「タグ集計の表示」で選べます。非表示でも付与・検索は可能です。").foregroundStyle(.secondary) }
                     Text("集計対象OFFも含みます。振替は別表示で、タグ間の金額は重複する場合があります。").font(.caption).foregroundStyle(.secondary)
                 }
             }

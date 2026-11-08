@@ -12,8 +12,8 @@ struct HouseholdBook: Identifiable, Codable, Equatable {
     var id = UUID()
     var name: String
     var isShared = false
-    // 仮の初期値。仕様確定後に変更可能。
-    var showsTagSummary = true
+    // 新規家計簿はタグ集計を初期OFF。既存の保存値は維持する。
+    var showsTagSummary = false
     var hiddenTagIDs: Set<UUID> = []
     var isArchived: Bool? = nil
     var order: Int? = nil
@@ -46,6 +46,7 @@ struct BudgetTag: Identifiable, Codable, Equatable {
     var bookID: UUID
     var name: String
     var isArchived = false
+    var order: Int? = nil
 }
 
 struct BudgetEntry: Identifiable, Codable, Equatable {
@@ -373,10 +374,13 @@ extension BudgetSnapshot {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw BudgetError.emptyName }
         if let id { guard tags.contains(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidTag } }
-        guard !tags.contains(where: { $0.bookID == bookID && $0.name == name && $0.id != id }) else { throw BudgetError.duplicateName }
+        guard !tags.contains(where: { $0.bookID == bookID && Self.categoryNameKey($0.name) == Self.categoryNameKey(name) && $0.id != id }) else { throw BudgetError.duplicateName }
         if let index = tags.firstIndex(where: { $0.id == id }) { tags[index].name = name; return tags[index].id }
-        let tag = BudgetTag(bookID: bookID, name: name)
+        let nextOrder = tags.enumerated().filter { $0.element.bookID == bookID }.map { $0.element.order ?? $0.offset }.max() ?? -1
+        guard nextOrder < Int.max else { throw BudgetError.invalidTag }
+        let tag = BudgetTag(bookID: bookID, name: name, order: nextOrder + 1)
         tags.append(tag)
+        books[books.firstIndex { $0.id == bookID }!].hiddenTagIDs.insert(tag.id)
         return tag.id
     }
     @discardableResult
@@ -388,10 +392,11 @@ extension BudgetSnapshot {
         if let id {
             guard let index = accounts.firstIndex(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidAccount }
             guard !accounts[index].isWallet else { throw BudgetError.protectedItem }
+            guard !accounts.contains(where: { $0.bookID == bookID && $0.id != id && Self.categoryNameKey($0.name) == Self.categoryNameKey(name) }) else { throw BudgetError.duplicateName }
             accounts[index].name = name
             return id
         }
-        // 一般項目の同名制約は未確定のため、従来どおり同名は許可。
+        guard !accounts.contains(where: { $0.bookID == bookID && Self.categoryNameKey($0.name) == Self.categoryNameKey(name) }) else { throw BudgetError.duplicateName }
         let account = MoneyAccount(bookID: bookID, name: name, order: (orderedAccounts(bookID: bookID).last?.order ?? 0) + 1)
         accounts.append(account)
         return account.id
@@ -677,5 +682,31 @@ extension BudgetSnapshot {
                   tags.filter({ $0.bookID == old.id }) == previous.tags.filter({ $0.bookID == old.id }),
                   entries.filter({ $0.bookID == old.id }) == previous.entries.filter({ $0.bookID == old.id }) else { throw BudgetError.archivedBook }
         }
+    }
+}
+
+
+extension BudgetSnapshot {
+    func orderedTags(bookID: UUID) -> [BudgetTag] {
+        tags.enumerated().filter { $0.element.bookID == bookID }.sorted {
+            let left = $0.element.order ?? $0.offset, right = $1.element.order ?? $1.offset
+            return left == right ? $0.offset < $1.offset : left < right
+        }.map(\.element)
+    }
+    mutating func reorderTags(bookID: UUID, ids: [UUID]) throws {
+        try requireEditableBook(bookID)
+        let current = orderedTags(bookID: bookID)
+        guard ids.count == current.count, Set(ids).count == ids.count, Set(ids) == Set(current.map(\.id)) else { throw BudgetError.invalidTag }
+        for (position, id) in ids.enumerated() { tags[tags.firstIndex { $0.id == id }!].order = position }
+    }
+    mutating func setTagSummary(bookID: UUID, enabled: Bool) throws {
+        try requireEditableBook(bookID)
+        books[books.firstIndex { $0.id == bookID }!].showsTagSummary = enabled
+    }
+    mutating func setTagVisible(bookID: UUID, tagID: UUID, visible: Bool) throws {
+        try requireEditableBook(bookID)
+        guard tags.contains(where: { $0.id == tagID && $0.bookID == bookID }) else { throw BudgetError.invalidTag }
+        let index = books.firstIndex { $0.id == bookID }!
+        if visible { books[index].hiddenTagIDs.remove(tagID) } else { books[index].hiddenTagIDs.insert(tagID) }
     }
 }

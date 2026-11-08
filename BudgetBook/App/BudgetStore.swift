@@ -38,7 +38,7 @@ final class BudgetStore: ObservableObject {
     var currentBook: HouseholdBook? { state.books.first { $0.id == bookID } }
     var accounts: [MoneyAccount] { bookID.map { state.orderedAccounts(bookID: $0) } ?? [] }
     var categories: [BudgetCategory] { state.categories.filter { $0.bookID == bookID }.sorted { $0.order < $1.order } }
-    var tags: [BudgetTag] { state.tags.filter { $0.bookID == bookID } }
+    var tags: [BudgetTag] { bookID.map { state.orderedTags(bookID: $0) } ?? [] }
     var entries: [BudgetEntry] { bookID.map { state.orderedEntries(bookID: $0) } ?? [] }
     func entries(in month: Date) -> [BudgetEntry] {
         let calendar = Calendar.current
@@ -135,6 +135,13 @@ final class BudgetStore: ObservableObject {
             }
         }
         return saved ? savedID : nil
+    }
+    func moveTags(bookID: UUID, from: IndexSet, to: Int) {
+        update { snapshot in
+            var ids = snapshot.orderedTags(bookID: bookID).map(\.id)
+            ids.move(fromOffsets: from, toOffset: to)
+            try snapshot.reorderTags(bookID: bookID, ids: ids)
+        }
     }
     func moveAccounts(bookID: UUID, from: IndexSet, to: Int) {
         update { snapshot in

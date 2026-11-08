@@ -144,6 +144,7 @@ struct MasterListView: View {
                     }
                 } else {
                     ForEach(store.tags) { tag in masterRow(id: tag.id, name: tag.name, archived: tag.isArchived) }
+                        .onMove { from, to in if let bookID = store.bookID { store.moveTags(bookID: bookID, from: from, to: to) } }
                     if store.tags.isEmpty { Text("右上の＋からタグを追加できます。").foregroundStyle(.secondary) }
                 }
             }
@@ -152,7 +153,7 @@ struct MasterListView: View {
             }
         }.navigationTitle(type.rawValue)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { if type == .account { EditButton().disabled(!store.canEditCurrentBook) } }
+                ToolbarItem(placement: .topBarTrailing) { EditButton().disabled(!store.canEditCurrentBook) }
                 ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("追加").disabled(!store.canEditCurrentBook) }
             }
             .sheet(isPresented: $adding) {
@@ -192,7 +193,7 @@ struct MasterEditorView: View {
     private var archivedMatch: BudgetTag? {
         guard type == .tag, existing == nil else { return nil }
         let cleaned = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        return store.state.tags.first { $0.bookID == bookID && $0.name == cleaned && $0.isArchived }
+        return store.state.tags.first { $0.bookID == bookID && BudgetSnapshot.categoryNameKey($0.name) == BudgetSnapshot.categoryNameKey(cleaned) && $0.isArchived }
     }
     var body: some View {
         Form {
@@ -290,18 +291,14 @@ struct TagDisplayView: View {
     var body: some View {
         Form {
             Toggle("タグ別集計を表示", isOn: Binding(get: { store.currentBook?.showsTagSummary ?? false }, set: { value in
-                store.update { snapshot in if let index = snapshot.books.firstIndex(where: { $0.id == store.bookID }) { snapshot.books[index].showsTagSummary = value } }
+                if let id = store.bookID { store.update { try $0.setTagSummary(bookID: id, enabled: value) } }
             }))
             ForEach(store.tags) { tag in
                 Toggle(tag.name, isOn: Binding(get: { !(store.currentBook?.hiddenTagIDs.contains(tag.id) ?? false) }, set: { value in
-                    store.update { snapshot in
-                        if let index = snapshot.books.firstIndex(where: { $0.id == store.bookID }) {
-                            if value { snapshot.books[index].hiddenTagIDs.remove(tag.id) } else { snapshot.books[index].hiddenTagIDs.insert(tag.id) }
-                        }
-                    }
+                    if let bookID = store.bookID { store.update { try $0.setTagVisible(bookID: bookID, tagID: tag.id, visible: value) } }
                 }))
             }
-            Text("非表示にしても、取引への付与・検索には使えます。").font(.caption).foregroundStyle(.secondary)
+            Text("全体と新しいタグの表示は初期OFFです。非表示でも、取引への付与・検索には使えます。タグの順序はタグ一覧の「編集」から変更できます。").font(.caption).foregroundStyle(.secondary)
         }.disabled(!store.canEditCurrentBook).navigationTitle("タグ集計の表示")
     }
 }
