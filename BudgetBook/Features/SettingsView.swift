@@ -15,6 +15,14 @@ struct SettingsView: View {
                 NavigationLink("入出金元", destination: MasterListView(type: .account))
                 NavigationLink("タグ集計の表示", destination: TagDisplayView())
             }
+            Section("カレンダー") {
+                Picker("週の始まり", selection: Binding(get: { store.weekStart }, set: { store.setWeekStart($0) })) {
+                    Text("月曜日").tag(CalendarWeekStart.monday)
+                    Text("日曜日").tag(CalendarWeekStart.sunday)
+                }.disabled(!store.canWrite)
+                Text("全家計簿に共通です。表示月は3タブで連動し、アプリ起動時は今月から表示します。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("バックアップ") {
                 NavigationLink("バックアップ・復元", destination: BackupStatusView())
             }

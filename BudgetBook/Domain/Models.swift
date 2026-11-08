@@ -17,6 +17,7 @@ struct HouseholdBook: Identifiable, Codable, Equatable {
     var hiddenTagIDs: Set<UUID> = []
     var isArchived: Bool? = nil
     var order: Int? = nil
+    var annualLineChart: Bool? = nil
     var archived: Bool { isArchived ?? false }
 }
 
@@ -71,6 +72,7 @@ struct BudgetEntry: Identifiable, Codable, Equatable {
 struct BudgetSnapshot: Codable, Equatable {
     var schemaVersion = 2
     var cloudBackupSettings: CloudBackupSettings? = nil
+    var calendarWeekStart: CalendarWeekStart? = nil
     var books: [HouseholdBook] = []
     var accounts: [MoneyAccount] = []
     var categories: [BudgetCategory] = []
@@ -94,7 +96,7 @@ struct BudgetSnapshot: Codable, Equatable {
         var entry = input
         try requireEditableBook(entry.bookID)
         guard entry.amount > 0, entry.amount <= 999_999_999 else { throw BudgetError.invalidAmount }
-        guard entry.date.timeIntervalSince1970.isFinite else { throw BudgetError.invalidDate }
+        guard EntryDateLimits.contains(entry.date) else { throw BudgetError.invalidDate }
         guard (entry.merchant ?? "").count <= 100, entry.memo.count <= 1000 else { throw BudgetError.textTooLong }
         if let previous {
             guard previous.id == entry.id, previous.kind == entry.kind, previous.bookID == entry.bookID,
@@ -173,7 +175,7 @@ enum BudgetError: LocalizedError {
         case .archivedBook: "この家計簿は閲覧専用です。変更するには設定の家計簿管理から復元してください。"
         case .lastActiveBook: "利用可能な最後の1冊はアーカイブできません。別の家計簿を作成してから操作してください。"
         case .invalidAmount: "金額は1〜999,999,999円の整数で入力してください。"
-        case .invalidDate: "有効な日付を選択してください。"
+        case .invalidDate: "日付は1900年1月1日〜2099年12月31日で選択してください。"
         case .textTooLong: "お店・相手先は100文字、メモは1,000文字以内で入力してください。"
         case .immutableKind: "保存済みの種類・所属家計簿・元支出は変更できません。削除して再登録してください。"
         case .invalidRefund: "同じ家計簿の元の支出を確認してください。"
@@ -708,5 +710,33 @@ extension BudgetSnapshot {
         guard tags.contains(where: { $0.id == tagID && $0.bookID == bookID }) else { throw BudgetError.invalidTag }
         let index = books.firstIndex { $0.id == bookID }!
         if visible { books[index].hiddenTagIDs.remove(tagID) } else { books[index].hiddenTagIDs.insert(tagID) }
+    }
+}
+
+
+struct CategoryAmount: Identifiable, Equatable {
+    let id: UUID
+    let name: String
+    let amount: Int64
+}
+enum CategoryChartKind { case empty, zero, pie, bar }
+extension BudgetSnapshot {
+    func orderedCategoryAmounts(bookID: UUID, kind: EntryKind, entries: [BudgetEntry], parentID: UUID? = nil) -> [CategoryAmount] {
+        let totals = categoryAmounts(bookID: bookID, kind: kind, entries: entries, parentID: parentID)
+        let order = orderedCategories(bookID: bookID, kind: kind, parentID: parentID)
+        let ranks = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($0.element.id, $0.offset) })
+        let names = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0.name) })
+        return totals.map { CategoryAmount(id: $0.key, name: names[$0.key] ?? "未分類", amount: $0.value) }.sorted {
+            $0.amount == $1.amount ? (ranks[$0.id] ?? Int.max) < (ranks[$1.id] ?? Int.max) : $0.amount > $1.amount
+        }
+    }
+    static func categoryChartKind(_ amounts: [CategoryAmount]) -> CategoryChartKind {
+        if amounts.isEmpty { return .empty }
+        if amounts.allSatisfy({ $0.amount == 0 }) { return .zero }
+        return amounts.contains(where: { $0.amount < 0 }) ? .bar : .pie
+    }
+    mutating func setAnnualLineChart(bookID: UUID, enabled: Bool) throws {
+        try requireEditableBook(bookID)
+        books[books.firstIndex { $0.id == bookID }!].annualLineChart = enabled
     }
 }

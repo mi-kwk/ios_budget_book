@@ -23,11 +23,11 @@ struct EntryEditor: View {
     @State private var choosingAccount: AccountSide?
     @State private var choosingCategory = false
     @State private var didInitialize = false
-    init(bookID: UUID, existing: BudgetEntry? = nil, refundOriginal: BudgetEntry? = nil) {
+    init(bookID: UUID, existing: BudgetEntry? = nil, refundOriginal: BudgetEntry? = nil, initialDate: Date = Date()) {
         self.bookID = bookID; self.existing = existing; self.refundOriginal = refundOriginal
         _kind = State(initialValue: existing?.kind ?? (refundOriginal == nil ? .expense : .refund))
         _amount = State(initialValue: existing.map { String($0.amount) } ?? "")
-        _date = State(initialValue: existing?.date ?? max(Date(), refundOriginal?.date ?? .distantPast))
+        _date = State(initialValue: existing?.date ?? EntryDateLimits.clamp(max(initialDate, refundOriginal?.date ?? .distantPast)))
         _categoryID = State(initialValue: existing?.categoryID)
         _sourceID = State(initialValue: existing?.sourceID)
         _destinationID = State(initialValue: existing?.destinationID)
@@ -54,7 +54,7 @@ struct EntryEditor: View {
             }
             Section("金額・日付") {
                 TextField("金額（円）", text: $amount).keyboardType(.numberPad)
-                DatePicker("日付", selection: $date, displayedComponents: .date)
+                DatePicker("日付", selection: $date, in: EntryDateLimits.range(), displayedComponents: .date)
             }
             if kind != .transfer && kind != .refund {
                 Section("カテゴリ") {

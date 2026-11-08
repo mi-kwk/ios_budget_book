@@ -5,6 +5,21 @@ import SwiftUI
 final class BudgetStore: ObservableObject {
     @Published private(set) var state: BudgetSnapshot
     @Published var errorMessage: String?
+    @Published private(set) var calendarNavigation = CalendarNavigation()
+    @Published var calendarMode = false
+    @Published var categoryKind = EntryKind.expense
+    func changeDisplayedYear(_ amount: Int) { calendarNavigation.changeYear(Calendar.current.component(.year, from: displayMonth) + amount) }
+    func selectDisplayedMonth(_ number: Int) { calendarNavigation.selectMonth(number) }
+    func setAnnualLineChart(_ enabled: Bool) {
+        if let id = bookID { update { try $0.setAnnualLineChart(bookID: id, enabled: enabled) } }
+    }
+    var displayMonth: Date { calendarNavigation.month }
+    var selectedDay: Date { calendarNavigation.selectedDay }
+    var weekStart: CalendarWeekStart { state.calendarWeekStart ?? .monday }
+    func moveDisplayedMonth(_ amount: Int) { calendarNavigation.moveMonth(amount) }
+    func selectCalendarDay(_ date: Date) { calendarNavigation.selectDay(date) }
+    func goToToday() { calendarNavigation = CalendarNavigation() }
+    func setWeekStart(_ start: CalendarWeekStart) { update { $0.calendarWeekStart = start } }
     private let repository: any BudgetRepository
     private(set) var canWrite = true
     @Published private(set) var rollbackRecord: RollbackRecord?
@@ -85,9 +100,11 @@ final class BudgetStore: ObservableObject {
         }
     }
     func saveEntry(_ entry: BudgetEntry) -> Bool {
-        update { snapshot in
+        let saved = update { snapshot in
             try snapshot.saveTransaction(entry)
         }
+        if saved, let date = state.entries.first(where: { $0.id == entry.id })?.date { calendarNavigation.selectDay(date) }
+        return saved
     }
     func deleteEntry(_ id: UUID) { update { try $0.deleteTransaction(id) } }
     func addBook(name: String, shared: Bool) {

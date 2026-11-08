@@ -3,19 +3,23 @@ import Charts
 
 func yen(_ amount: Int64) -> String { amount.formatted(.currency(code: "JPY").precision(.fractionLength(0))) }
 
+enum BudgetTab: Hashable { case home, entries, summary }
+
 struct RootView: View {
     @EnvironmentObject private var store: BudgetStore
     @State private var showSettings = false
     @State private var showEntry = false
+    @State private var selectedTab: BudgetTab = .home
+    @State private var newEntryDate = Date()
     var body: some View {
-        TabView {
-            shell("ホーム") { HomeView() }.tabItem { Label("ホーム", systemImage: "house") }
-            shell("入出金") { EntriesView() }.tabItem { Label("入出金", systemImage: "list.bullet.rectangle") }
-            shell("収支") { SummaryView() }.tabItem { Label("収支", systemImage: "chart.pie") }
+        TabView(selection: $selectedTab) {
+            shell("ホーム") { HomeView() }.tabItem { Label("ホーム", systemImage: "house") }.tag(BudgetTab.home)
+            shell("入出金") { EntriesView() }.tabItem { Label("入出金", systemImage: "list.bullet.rectangle") }.tag(BudgetTab.entries)
+            shell("収支") { SummaryView() }.tabItem { Label("収支", systemImage: "chart.pie") }.tag(BudgetTab.summary)
         }
         .sheet(isPresented: $showSettings) { NavigationStack { SettingsView() } }
         .sheet(isPresented: $showEntry) {
-            if let bookID = store.bookID { NavigationStack { EntryEditor(bookID: bookID) } }
+            if let bookID = store.bookID { NavigationStack { EntryEditor(bookID: bookID, initialDate: newEntryDate) } }
         }
         .alert("確認", isPresented: Binding(get: { store.errorMessage != nil }, set: { if !$0 { store.errorMessage = nil } })) {
             Button("閉じる", role: .cancel) { store.errorMessage = nil }
@@ -47,7 +51,7 @@ struct RootView: View {
                     }
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         Button { showSettings = true } label: { Image(systemName: "gearshape") }.accessibilityLabel("設定")
-                        Button { showEntry = true } label: { Image(systemName: "plus") }
+                        Button { newEntryDate = selectedTab == .entries && store.calendarMode ? store.selectedDay : Date(); showEntry = true } label: { Image(systemName: "plus") }
                             .accessibilityLabel("取引を登録").disabled(!store.canEditCurrentBook)
                     }
                 }
@@ -56,17 +60,18 @@ struct RootView: View {
 }
 
 struct MonthPicker: View {
-    @Binding var month: Date
+    @EnvironmentObject private var store: BudgetStore
     var body: some View {
         HStack {
-            Button { move(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("前の月")
+            Button { store.moveDisplayedMonth(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("前の月")
             Spacer()
-            Text(month.formatted(.dateTime.year().month())).font(.headline)
+            Text(store.displayMonth.formatted(.dateTime.year().month())).font(.headline)
+            if BudgetCalendar.isFutureMonth(store.displayMonth) { Text("予定").font(.caption).foregroundStyle(.secondary) }
+            Button("今月") { store.goToToday() }.font(.caption).accessibilityLabel("今月に戻る")
             Spacer()
-            Button { move(1) } label: { Image(systemName: "chevron.right") }.accessibilityLabel("次の月")
+            Button { store.moveDisplayedMonth(1) } label: { Image(systemName: "chevron.right") }.accessibilityLabel("次の月")
         }.buttonStyle(.borderless).padding(.vertical, 4)
     }
-    private func move(_ value: Int) { month = Calendar.current.date(byAdding: .month, value: value, to: month) ?? month }
 }
 
 struct TotalsView: View {
@@ -83,17 +88,25 @@ struct TotalsView: View {
 
 struct HomeView: View {
     @EnvironmentObject private var store: BudgetStore
-    @State private var month = Date()
-    @State private var lineChart = false
+    private var month: Date { store.displayMonth }
+    private var lineChart: Bool { store.currentBook?.annualLineChart ?? false }
+    @State private var annualSelectedMonth: Int?
     var body: some View {
         List {
-            MonthPicker(month: $month)
+            MonthPicker()
             Section("月間収支") { TotalsView(totals: BudgetSummary.totals(store.entries(in: month))) }
-            Section("カテゴリ別支出") { CategoryChart(month: month, kind: .expense) }
+            Section("カテゴリ別集計") { CategoryKindPicker(); CategoryChart(month: month, kind: store.categoryKind) }
             Section("年間収支") {
-                Picker("グラフ形式", selection: $lineChart) { Text("棒").tag(false); Text("折れ線").tag(true) }.pickerStyle(.segmented)
+                HStack {
+                    Button { store.changeDisplayedYear(-1) } label: { Image(systemName: "chevron.left") }.accessibilityLabel("前の年").disabled(Calendar.current.component(.year, from: month) <= 1900)
+                    Spacer(); Text("\(Calendar.current.component(.year, from: month))年").font(.headline); Spacer()
+                    Button { store.changeDisplayedYear(1) } label: { Image(systemName: "chevron.right") }.accessibilityLabel("次の年").disabled(Calendar.current.component(.year, from: month) >= 2099)
+                }.buttonStyle(.borderless)
+                Picker("グラフ形式", selection: Binding(get: { lineChart }, set: { store.setAnnualLineChart($0) })) { Text("棒").tag(false); Text("折れ線").tag(true) }.pickerStyle(.segmented).disabled(!store.canEditCurrentBook)
                 Chart {
                     ForEach(1...12, id: \.self) { number in
+                        let future = futureMonth(number)
+                        if !future || annualHasTargets(number) {
                         if lineChart {
                             LineMark(x: .value("月", number), y: .value("収入", annual(number).income)).foregroundStyle(by: .value("種類", "収入"))
                             LineMark(x: .value("月", number), y: .value("支出", annual(number).expense)).foregroundStyle(by: .value("種類", "支出"))
@@ -101,11 +114,32 @@ struct HomeView: View {
                             BarMark(x: .value("月", number), y: .value("収入", annual(number).income)).foregroundStyle(by: .value("種類", "収入")).position(by: .value("種類", "収入"))
                             BarMark(x: .value("月", number), y: .value("支出", annual(number).expense)).foregroundStyle(by: .value("種類", "支出")).position(by: .value("種類", "支出"))
                         }
+                        }
                     }
                 }.chartForegroundStyleScale(["収入": Color.teal, "支出": Color.orange]).frame(height: 180)
-                Text("\(Calendar.current.component(.year, from: month))年・集計対象ONの収入と支出").font(.caption).foregroundStyle(.secondary)
+                    .chartXScale(domain: 1...12)
+                    .chartXAxis {
+                        AxisMarks(values: Array(1...12)) { value in
+                            AxisValueLabel { if let number = value.as(Int.self) { Text("\(number)\(futureMonth(number) ? "予定" : "月")").font(.caption2) } }
+                        }
+                    }
+                    .chartXSelection(value: $annualSelectedMonth)
+                    .onChange(of: annualSelectedMonth) { _, value in if let value { store.selectDisplayedMonth(value) } }
+                Text("\(Calendar.current.component(.year, from: month))年・集計対象ONの収入と返金差引後支出。未来月は予定で、対象取引のない未来月は描画しません。月を選ぶと詳細を表示します。").font(.caption).foregroundStyle(.secondary)
+                if let number = annualSelectedMonth {
+                    Text("\(number)月\(futureMonth(number) ? "（予定）" : "")の詳細").font(.headline)
+                    TotalsView(totals: annual(number))
+                }
             }
         }
+    }
+    private func futureMonth(_ number: Int) -> Bool {
+        let year = Calendar.current.component(.year, from: month)
+        guard let date = Calendar.current.date(from: DateComponents(year: year, month: number, day: 1)) else { return false }
+        return BudgetCalendar.isFutureMonth(date)
+    }
+    private func annualHasTargets(_ number: Int) -> Bool {
+        store.entries.contains { Calendar.current.component(.year, from: $0.date) == Calendar.current.component(.year, from: month) && Calendar.current.component(.month, from: $0.date) == number && $0.includedInTotals && $0.kind != .transfer }
     }
     private func annual(_ number: Int) -> MoneyTotals {
         let calendar = Calendar.current
@@ -115,7 +149,6 @@ struct HomeView: View {
     }
 }
 
-struct CategoryAmount: Identifiable { let id: UUID; let name: String; let amount: Int64 }
 struct CategoryChart: View {
     @EnvironmentObject private var store: BudgetStore
     let month: Date
@@ -123,15 +156,16 @@ struct CategoryChart: View {
     var parentID: UUID? = nil
     private var amounts: [CategoryAmount] {
         guard let bookID = store.bookID else { return [] }
-        return store.state.categoryAmounts(bookID: bookID, kind: kind, entries: store.entries(in: month), parentID: parentID)
-            .map { CategoryAmount(id: $0.key, name: store.categoryName($0.key), amount: $0.value) }
-            .sorted { $0.amount == $1.amount ? $0.name < $1.name : $0.amount > $1.amount }
+        return store.state.orderedCategoryAmounts(bookID: bookID, kind: kind, entries: store.entries(in: month), parentID: parentID)
     }
 
     var body: some View {
         if amounts.isEmpty {
-            ContentUnavailableView("集計する取引がありません", systemImage: "chart.pie", description: Text("＋から収入や支出を登録できます。"))
+            ContentUnavailableView("集計対象の取引がありません", systemImage: "chart.pie", description: Text("対象外の取引は履歴で確認できます。"))
         } else {
+            if BudgetSnapshot.categoryChartKind(amounts) == .zero {
+                ContentUnavailableView("差引金額は0円です", systemImage: "equal.circle")
+            } else {
             Chart(amounts) { item in
                 if amounts.contains(where: { $0.amount < 0 }) {
                     BarMark(x: .value("金額", item.amount), y: .value("カテゴリ", item.name))
@@ -141,6 +175,7 @@ struct CategoryChart: View {
                         .foregroundStyle(by: .value("カテゴリ", item.name))
                 }
             }.frame(height: 190)
+            }
             if amounts.contains(where: { $0.amount < 0 }) {
                 Text("返金の差し引きでマイナスのカテゴリがあるため、棒グラフで表示しています。")
                     .font(.caption).foregroundStyle(.secondary)
@@ -164,21 +199,23 @@ struct CategoryChart: View {
 
 struct EntriesView: View {
     @EnvironmentObject private var store: BudgetStore
-    @State private var month = Date()
-    @State private var calendarMode = false
-    @State private var selectedDay = Date()
+    private var month: Date { store.displayMonth }
+    private var calendarMode: Bool { store.calendarMode }
+    private var selectedDay: Date { store.selectedDay }
     private var visible: [BudgetEntry] {
         let values = store.entries(in: month)
         return calendarMode ? values.filter { Calendar.current.isDate($0.date, inSameDayAs: selectedDay) } : values
     }
     var body: some View {
         List {
-            MonthPicker(month: $month)
-            Picker("表示", selection: $calendarMode) { Text("一覧").tag(false); Text("カレンダー").tag(true) }.pickerStyle(.segmented)
+            MonthPicker()
+            Picker("表示", selection: $store.calendarMode) { Text("一覧").tag(false); Text("カレンダー").tag(true) }.pickerStyle(.segmented)
             if calendarMode {
-                DatePicker("日付", selection: $selectedDay, displayedComponents: .date).datePickerStyle(.graphical)
-                    .onChange(of: selectedDay) { _, value in month = value }
-                Section("選択日の収支") { TotalsView(totals: BudgetSummary.totals(visible)) }
+                Section { BudgetCalendarView() }
+                Section("\(selectedDay.formatted(date: .abbreviated, time: .omitted))の収支・取引") {
+                    TotalsView(totals: BudgetSummary.totals(visible))
+                    if visible.contains(where: { $0.kind == .transfer }) { Label("振替があります（収支には含みません）", systemImage: "arrow.left.arrow.right").font(.caption) }
+                }
             }
             NavigationLink("履歴を検索", destination: HistoryView())
             if visible.isEmpty { ContentUnavailableView("取引がありません", systemImage: "tray", description: Text("この家計簿の取引を＋から登録してください。")) }
@@ -211,13 +248,12 @@ struct EntryRow: View {
 
 struct SummaryView: View {
     @EnvironmentObject private var store: BudgetStore
-    @State private var month = Date()
-    @State private var kind = EntryKind.expense
+    private var month: Date { store.displayMonth }
     @State private var expandedTags = false
     private var visibleTags: [BudgetTag] { store.tags.filter { !(store.currentBook?.hiddenTagIDs.contains($0.id) ?? false) } }
     var body: some View {
         List {
-            MonthPicker(month: $month)
+            MonthPicker()
             Section("通常収支") { TotalsView(totals: BudgetSummary.totals(store.entries(in: month))) }
             if store.currentBook?.showsTagSummary == true {
                 Section("タグ別集計") {
@@ -248,8 +284,8 @@ struct SummaryView: View {
                 }
             }
             Section("カテゴリ別集計") {
-                Picker("収支種別", selection: $kind) { Text("支出").tag(EntryKind.expense); Text("収入").tag(EntryKind.income) }.pickerStyle(.segmented)
-                CategoryChart(month: month, kind: kind)
+                CategoryKindPicker()
+                CategoryChart(month: month, kind: store.categoryKind)
             }
         }
     }
@@ -330,5 +366,16 @@ struct EntryDetail: View {
                 }
             } else { ContentUnavailableView("取引が見つかりません", systemImage: "tray") }
         }.navigationTitle("取引詳細")
+    }
+}
+
+
+struct CategoryKindPicker: View {
+    @EnvironmentObject private var store: BudgetStore
+    var body: some View {
+        Picker("収支種別", selection: $store.categoryKind) {
+            Text("支出").tag(EntryKind.expense)
+            Text("収入").tag(EntryKind.income)
+        }.pickerStyle(.segmented)
     }
 }
