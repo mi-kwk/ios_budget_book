@@ -71,7 +71,7 @@ enum BackupCodec {
         guard payload.version == 1 else { throw BackupError.unsupportedVersion }
         guard payload.createdAt.timeIntervalSince1970.isFinite else { throw BackupError.invalidData }
         try payload.snapshot.validateBackup()
-        return payload
+        return BackupPayload(snapshot: try payload.snapshot.migratedCategoryHierarchy(), createdAt: payload.createdAt)
     }
     private static func header(salt: Data) -> Data {
         Data("BudgetBookEncrypted|1|PBKDF2-SHA256/AES-256-GCM|\(iterations)|\(salt.base64EncodedString())".utf8)
@@ -111,7 +111,7 @@ struct RollbackRecord: Codable {
             let plaintext = try AES.GCM.open(AES.GCM.SealedBox(combined: sealed), using: key, authenticating: Self.metadata(createdAt, expiresAt))
             let state = try JSONDecoder().decode(BudgetSnapshot.self, from: plaintext)
             try state.validateBackup()
-            return state
+            return try state.migratedCategoryHierarchy()
         } catch { throw BackupError.invalidData }
     }
     private static func metadata(_ createdAt: Date, _ expiresAt: Date) -> Data {
@@ -148,6 +148,7 @@ struct RestoreCoordinator {
     let keys: any RollbackKeyStore
     @discardableResult
     func restore(_ snapshot: BudgetSnapshot, now: Date = Date()) throws -> RollbackRecord {
+        let snapshot = try snapshot.migratedCategoryHierarchy()
         try snapshot.validateBackup()
         guard let current = try repository.load() else { throw BackupError.invalidData }
         try current.validateBackup()

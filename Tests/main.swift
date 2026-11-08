@@ -8,7 +8,14 @@ func expect(_ condition: @autoclosure () -> Bool, _ message: String) {
 func rejects(_ message: String, _ work: () throws -> Void) {
     do { try work(); fatalError(message) } catch { checks += 1 }
 }
-var state = BudgetSnapshot.initial()
+func testSnapshot() -> BudgetSnapshot {
+    var snapshot = BudgetSnapshot.initial()
+    let first = snapshot.selectedBookID
+    try! snapshot.createBook(name: "共有用", shared: true)
+    snapshot.selectedBookID = first
+    return snapshot
+}
+var state = testSnapshot()
 let book = state.books[0].id
 let otherBook = state.books[1].id
 let wallet = state.accounts.first { $0.bookID == book }!.id
@@ -50,7 +57,7 @@ expect(decoded == state, "全モデル・関連・表示設定の往復")
 
 
 // カテゴリ管理の回帰テスト。過去の取引の参照を保ったまま分類を変更する。
-var catalog = BudgetSnapshot.initial()
+var catalog = testSnapshot()
 let catalogBook = catalog.books[0].id
 let anotherBook = catalog.books[1].id
 let sourceRoot = try catalog.saveCategory(bookID: catalogBook, kind: .expense, name: "検証A", parentID: nil)
@@ -111,7 +118,7 @@ expect(reloaded.orderedCategories(bookID: catalogBook, kind: .expense, parentID:
 
 
 // タグ・入出金元の関連保護と旧形式互換性。
-var masters = BudgetSnapshot.initial()
+var masters = testSnapshot()
 let masterBook = masters.books[0].id
 let foreignBook = masters.books[1].id
 let masterWallet = masters.accounts.first { $0.bookID == masterBook && $0.isWallet }!.id
@@ -175,6 +182,7 @@ legacyObject["accounts"] = legacyAccounts
 let legacyData = try JSONSerialization.data(withJSONObject: legacyObject)
 let legacyState = try JSONDecoder().decode(BudgetSnapshot.self, from: legacyData)
 expect(legacyState.orderedAccounts(bookID: masterBook).map(\.id) == masters.accounts.filter { $0.bookID == masterBook }.map(\.id), "旧JSONの並び順なしデータを配列順で読み込める")
+try runCategoryChecks()
 try runRefundChecks()
 try runBackupChecks()
 try await runCloudChecks()

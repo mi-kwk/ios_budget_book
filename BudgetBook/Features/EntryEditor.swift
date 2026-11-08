@@ -62,7 +62,7 @@ struct EntryEditor: View {
                         HStack {
                             Text("カテゴリ")
                             Spacer()
-                            Text(store.categories.first(where: { $0.id == categoryID }).map(store.categoryTitle) ?? "未分類")
+                            Text(store.categories.first(where: { $0.id == categoryID }).map(store.categoryTitle) ?? "未分類 ＞ 未分類")
                                 .foregroundStyle(.secondary)
                             Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                         }

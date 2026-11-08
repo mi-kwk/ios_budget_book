@@ -65,7 +65,7 @@ struct BudgetEntry: Identifiable, Codable, Equatable {
 }
 
 struct BudgetSnapshot: Codable, Equatable {
-    var schemaVersion = 1
+    var schemaVersion = 2
     var cloudBackupSettings: CloudBackupSettings? = nil
     var books: [HouseholdBook] = []
     var accounts: [MoneyAccount] = []
@@ -76,16 +76,7 @@ struct BudgetSnapshot: Codable, Equatable {
 
     static func initial() -> Self {
         var state = Self()
-        // 初期2冊とカテゴリの具体一覧は試作用の仮設定。金額のサンプルは投入しない。
-        for book in [HouseholdBook(name: "個人用"), HouseholdBook(name: "共有用", isShared: true)] {
-            state.books.append(book)
-            state.accounts.append(MoneyAccount(bookID: book.id, name: "お財布", isWallet: true))
-            for kind in [EntryKind.expense, .income] {
-                state.categories.append(BudgetCategory(bookID: book.id, name: "未分類", kind: kind, isUncategorized: true))
-            }
-            try? state.addBasicCategories(bookID: book.id)
-        }
-        state.selectedBookID = state.books.first?.id
+        _ = try? state.createBook(name: "個人用", shared: false)
         return state
     }
 
@@ -154,10 +145,10 @@ struct BudgetSnapshot: Codable, Equatable {
                 entry.sourceID = nil
             }
             if entry.categoryID == nil {
-                entry.categoryID = categories.first { $0.bookID == entry.bookID && $0.kind == entry.kind && $0.isUncategorized }?.id
+                entry.categoryID = categories.first { $0.bookID == entry.bookID && $0.kind == entry.kind && $0.isUncategorized && $0.parentID != nil }?.id
             }
             guard let category = categories.first(where: { $0.id == entry.categoryID && $0.bookID == entry.bookID && $0.kind == entry.kind }),
-                  isCategoryAvailable(category) || previous?.categoryID == category.id else { throw BudgetError.invalidCategory }
+                  (isCategoryAvailable(category) || previous?.categoryID == category.id), category.parentID != nil else { throw BudgetError.invalidCategory }
         }
         guard entry.tagIDs.allSatisfy({ id in
             tags.contains { $0.id == id && $0.bookID == entry.bookID && (!$0.isArchived || previous?.tagIDs.contains(id) == true ||
@@ -248,7 +239,7 @@ extension BudgetSnapshot {
                   !parent.isArchived || existing?.parentID == parentID else { throw BudgetError.invalidCategory }
         }
         guard !categories.contains(where: {
-            $0.id != id && $0.bookID == bookID && $0.kind == kind && $0.parentID == parentID && $0.name == name
+            $0.id != id && $0.bookID == bookID && $0.kind == kind && $0.parentID == parentID && Self.categoryNameKey($0.name) == Self.categoryNameKey(name)
         }) else { throw BudgetError.duplicateName }
         if let index = categories.firstIndex(where: { $0.id == id }) {
             if categories[index].parentID != parentID {
@@ -304,18 +295,31 @@ struct BasicCategoryGroup: Identifiable {
         switch kind {
         case .expense:
             return [
-                Self(name: "食費", children: ["食料品", "外食", "カフェ"]),
-                Self(name: "日用品", children: ["生活用品", "消耗品"]),
-                Self(name: "交通費", children: ["電車・バス", "タクシー", "ガソリン"]),
-                Self(name: "住居費", children: ["家賃", "住宅関連"]),
-                Self(name: "水道光熱費", children: ["電気", "ガス", "水道"]),
-                Self(name: "通信費", children: ["携帯電話", "インターネット"]),
-                Self(name: "医療・健康", children: ["診療", "薬"]),
-                Self(name: "趣味・娯楽", children: ["趣味", "レジャー"]),
-                Self(name: "その他支出", children: [])
+                Self(name: "食費", children: ["食料品", "外食", "カフェ", "その他"]),
+                Self(name: "日用品", children: ["生活消耗品", "掃除・洗濯用品", "生活雑貨", "タバコ", "その他"]),
+                Self(name: "住居費", children: ["家賃", "住宅ローン", "修繕・維持費", "その他"]),
+                Self(name: "水道・光熱費", children: ["電気", "ガス", "水道", "その他"]),
+                Self(name: "通信費", children: ["携帯電話", "インターネット", "郵便・配送", "その他"]),
+                Self(name: "交通費", children: ["電車", "バス", "タクシー", "その他"]),
+                Self(name: "自動車費", children: ["ガソリン", "駐車場・高速代", "車検・整備", "自動車税", "その他"]),
+                Self(name: "衣服・美容", children: ["衣類", "靴・小物", "美容院", "化粧品", "その他"]),
+                Self(name: "健康・医療", children: ["診療・治療", "薬", "健康用品", "その他"]),
+                Self(name: "趣味・娯楽", children: ["ゲーム", "書籍", "映画・音楽", "旅行", "その他"]),
+                Self(name: "交際費", children: ["会食", "贈り物", "冠婚葬祭", "その他"]),
+                Self(name: "教育・子育て", children: ["学費", "習い事", "教材", "育児用品", "その他"]),
+                Self(name: "保険", children: ["生命保険", "医療保険", "自動車保険", "その他"]),
+                Self(name: "税金・社会保険", children: ["所得税・住民税", "年金", "健康保険料", "その他"]),
+                Self(name: "その他", children: ["手数料", "寄付", "その他"])
             ]
         case .income:
-            return [Self(name: "給与", children: ["給料", "賞与"]), Self(name: "その他収入", children: [])]
+            return [
+                Self(name: "給与", children: ["給与", "賞与", "各種手当", "その他"]),
+                Self(name: "事業・副業", children: ["事業収入", "副業報酬", "その他"]),
+                Self(name: "年金・給付金", children: ["年金", "公的手当", "給付金", "その他"]),
+                Self(name: "運用収入", children: ["預貯金利息", "配当金", "その他"]),
+                Self(name: "臨時収入", children: ["お祝い・贈与", "お小遣い", "不用品売却", "その他"]),
+                Self(name: "その他", children: ["その他"])
+            ]
         case .transfer, .refund: return []
         }
     }
@@ -328,16 +332,17 @@ extension BudgetSnapshot {
         for kind in [EntryKind.expense, .income] {
             for group in BasicCategoryGroup.groups(for: kind) {
                 let parentID: UUID
-                if let existing = categories.first(where: { $0.bookID == bookID && $0.kind == kind && $0.parentID == nil && $0.name == group.name }) {
+                if let existing = categories.first(where: { $0.bookID == bookID && $0.kind == kind && $0.parentID == nil && Self.categoryNameKey($0.name) == Self.categoryNameKey(group.name) }) {
                     guard !existing.isArchived, !existing.isUncategorized else { continue }
                     parentID = existing.id
                 } else { parentID = try saveCategory(bookID: bookID, kind: kind, name: group.name, parentID: nil) }
                 for child in group.children {
-                    if !categories.contains(where: { $0.bookID == bookID && $0.kind == kind && $0.parentID == parentID && $0.name == child }) {
+                    if !categories.contains(where: { $0.bookID == bookID && $0.kind == kind && $0.parentID == parentID && Self.categoryNameKey($0.name) == Self.categoryNameKey(child) }) {
                         try saveCategory(bookID: bookID, kind: kind, name: child, parentID: parentID)
                     }
                 }
             }
+            ensureUncategorized(bookID: bookID, kind: kind)
         }
     }
 }
@@ -399,7 +404,7 @@ extension BudgetSnapshot {
 extension BudgetSnapshot {
     /// 外部ファイルの復元前に、参照切れ・家計簿越境・標準項目の欠落を検証する。
     func validateBackup() throws {
-        guard schemaVersion == 1 else { throw BackupError.unsupportedVersion }
+        guard [1, 2].contains(schemaVersion) else { throw BackupError.unsupportedVersion }
         func valid(_ condition: Bool) throws { if !condition { throw BackupError.invalidData } }
         func unique(_ ids: [UUID]) -> Bool { Set(ids).count == ids.count }
         func named(_ name: String) -> Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf8.count <= 10_000 }
@@ -417,7 +422,13 @@ extension BudgetSnapshot {
             try valid((accountGroups[book.id] ?? []).filter { $0.isWallet }.count == 1)
             for kind in [EntryKind.expense, .income] {
                 let defaults = (categoryGroups[book.id] ?? []).filter { $0.kind == kind && $0.isUncategorized }
-                try valid(defaults.count == 1 && defaults[0].name == "未分類" && defaults[0].parentID == nil && !defaults[0].isArchived)
+                if schemaVersion == 1 {
+                    try valid(defaults.count == 1 && defaults[0].name == "未分類" && defaults[0].parentID == nil && !defaults[0].isArchived)
+                } else {
+                    try valid(defaults.count == 2 && defaults.allSatisfy { $0.name == "未分類" && !$0.isArchived })
+                    let roots = defaults.filter { $0.parentID == nil }
+                    try valid(roots.count == 1 && defaults.filter { $0.parentID == roots.first?.id }.count == 1)
+                }
             }
             try valid(book.hiddenTagIDs.isSubset(of: Set((tagGroups[book.id] ?? []).map(\.id))))
         }
@@ -429,10 +440,12 @@ extension BudgetSnapshot {
         for category in categories {
             try valid(bookIDs.contains(category.bookID) && category.kind != .transfer && category.kind != .refund && named(category.name))
             let key = "\(category.bookID)|\(category.kind.rawValue)|\(category.parentID?.uuidString ?? "root")|\(category.name)"
+            // Legacy files could contain case-only duplicates. Do not rename or merge them on migration.
             try valid(categoryNames.insert(key).inserted)
             if let parentID = category.parentID {
                 guard let parent = categoryMap[parentID] else { throw BackupError.invalidData }
-                try valid(parent.bookID == category.bookID && parent.kind == category.kind && parent.parentID == nil && !parent.isUncategorized)
+                try valid(parent.bookID == category.bookID && parent.kind == category.kind && parent.parentID == nil &&
+                          (!parent.isUncategorized || (schemaVersion == 2 && category.isUncategorized)))
             }
         }
         var tagNames: Set<String> = []
@@ -462,7 +475,7 @@ extension BudgetSnapshot {
                 try valid(entry.refundOfID == nil)
                 try valid(entry.kind == .expense ? entry.sourceID != nil && entry.destinationID == nil : entry.destinationID != nil && entry.sourceID == nil)
                 guard let id = entry.categoryID, let category = categoryMap[id] else { throw BackupError.invalidData }
-                try valid(category.bookID == entry.bookID && category.kind == entry.kind)
+                try valid(category.bookID == entry.bookID && category.kind == entry.kind && (schemaVersion == 1 || category.parentID != nil))
             }
         }
     }
@@ -511,5 +524,79 @@ extension BudgetSnapshot {
     }
     mutating func deleteTransaction(_ id: UUID) {
         entries.removeAll { $0.id == id || ($0.kind == .refund && $0.refundOfID == id) }
+    }
+}
+
+
+extension BudgetSnapshot {
+    static func categoryNameKey(_ name: String) -> String {
+        // Fold Latin A-Z in ASCII/full-width forms; preserve width, internal spaces and other Unicode distinctions.
+        String(String.UnicodeScalarView(name.trimmingCharacters(in: .whitespacesAndNewlines).unicodeScalars.map {
+            ((65...90).contains($0.value) || (0xFF21...0xFF3A).contains($0.value)) ? UnicodeScalar($0.value + 32)! : $0
+        }))
+    }
+    @discardableResult
+    mutating func createBook(name: String, shared: Bool) throws -> UUID {
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw BudgetError.emptyName }
+        guard !books.contains(where: { Self.categoryNameKey($0.name) == Self.categoryNameKey(name) }) else { throw BudgetError.duplicateName }
+        var next = self
+        let book = HouseholdBook(name: name, isShared: shared)
+        next.books.append(book)
+        next.accounts.append(MoneyAccount(bookID: book.id, name: "お財布", isWallet: true))
+        try next.addBasicCategories(bookID: book.id)
+        next.selectedBookID = book.id
+        self = next
+        return book.id
+    }
+    private mutating func ensureUncategorized(bookID: UUID, kind: EntryKind) {
+        let parent: BudgetCategory
+        if let existing = categories.first(where: { $0.bookID == bookID && $0.kind == kind && $0.isUncategorized && $0.parentID == nil }) { parent = existing }
+        else {
+            parent = BudgetCategory(bookID: bookID, name: "未分類", kind: kind, isUncategorized: true,
+                                    order: (orderedCategories(bookID: bookID, kind: kind, parentID: nil).last?.order ?? -1) + 1)
+            categories.append(parent)
+        }
+        if !categories.contains(where: { $0.parentID == parent.id && $0.isUncategorized }) {
+            categories.append(BudgetCategory(bookID: bookID, name: "未分類", kind: kind, parentID: parent.id, isUncategorized: true))
+        }
+    }
+    /// Upgrade a validated v1 snapshot without changing existing IDs, names, order or amounts.
+    func migratedCategoryHierarchy() throws -> BudgetSnapshot {
+        guard schemaVersion == 1 else {
+            guard schemaVersion == 2 else { throw BackupError.unsupportedVersion }
+            return self
+        }
+        try validateBackup()
+        var next = self
+        for book in books {
+            for kind in [EntryKind.expense, .income] { next.ensureUncategorized(bookID: book.id, kind: kind) }
+        }
+        let categoryMap = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        let usedRoots = Set(entries.compactMap { entry -> UUID? in
+            guard let id = entry.categoryID, categoryMap[id]?.parentID == nil else { return nil }
+            return id
+        })
+        var replacements: [UUID: UUID] = [:]
+        for parent in categories where usedRoots.contains(parent.id) {
+            if parent.isUncategorized {
+                replacements[parent.id] = next.categories.first { $0.parentID == parent.id && $0.isUncategorized }!.id
+            } else {
+                let base = "直接登録（移行分）"
+                var name = base, suffix = 2
+                while next.categories.contains(where: { $0.parentID == parent.id && Self.categoryNameKey($0.name) == Self.categoryNameKey(name) }) {
+                    name = "\(base) \(suffix)"; suffix += 1
+                }
+                let child = BudgetCategory(bookID: parent.bookID, name: name, kind: parent.kind, parentID: parent.id,
+                                           order: (next.orderedCategories(bookID: parent.bookID, kind: parent.kind, parentID: parent.id).last?.order ?? -1) + 1)
+                next.categories.append(child); replacements[parent.id] = child.id
+            }
+        }
+        for index in next.entries.indices {
+            if let id = next.entries[index].categoryID, let childID = replacements[id] { next.entries[index].categoryID = childID }
+        }
+        next.schemaVersion = 2
+        try next.validateBackup()
+        return next
     }
 }

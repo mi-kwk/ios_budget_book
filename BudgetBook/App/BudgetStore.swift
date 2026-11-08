@@ -68,16 +68,7 @@ final class BudgetStore: ObservableObject {
     func deleteEntry(_ id: UUID) { update { $0.deleteTransaction(id) } }
     func addBook(name: String, shared: Bool) {
         update { snapshot in
-            let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !name.isEmpty else { throw BudgetError.emptyName }
-            let book = HouseholdBook(name: name, isShared: shared)
-            snapshot.books.append(book)
-            snapshot.accounts.append(MoneyAccount(bookID: book.id, name: "お財布", isWallet: true))
-            for kind in [EntryKind.expense, .income] {
-                snapshot.categories.append(BudgetCategory(bookID: book.id, name: "未分類", kind: kind, isUncategorized: true))
-            }
-            try snapshot.addBasicCategories(bookID: book.id)
-            snapshot.selectedBookID = book.id
+            try snapshot.createBook(name: name, shared: shared)
         }
     }
     func toggleArchive(_ id: UUID, type: MasterType) {
@@ -134,7 +125,7 @@ final class BudgetStore: ObservableObject {
     func restoreBackup(_ payload: BackupPayload) throws {
         guard canWrite, let storage = repository as? any RestoreRepository else { throw BackupError.invalidData }
         guard !cloudBusy else { throw CloudBackupError.unavailable }
-        var restored = payload.snapshot
+        var restored = try payload.snapshot.migratedCategoryHierarchy()
         if restored.cloudBackupSettings != nil { restored.cloudBackupSettings?.pausedAfterRestore = true }
         cloudDebounce?.cancel()
         let record = try RestoreCoordinator(repository: storage, keys: DeviceRollbackKeyStore()).restore(restored)

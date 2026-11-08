@@ -311,10 +311,11 @@ struct CategoryChildrenView: View {
                             Button(parent.isArchived ? "復元" : "アーカイブ") { confirmsArchive = true }.disabled(!store.canWrite)
                         }
                     }
-                    if !parent.isUncategorized {
+                    Group {
                         Section("小カテゴリ") {
                             ForEach(store.state.orderedCategories(bookID: parent.bookID, kind: parent.kind, parentID: parent.id)) { child in
-                                Button { editing = child } label: { CategoryNameView(category: child) }.tint(.primary)
+                                if child.isUncategorized { CategoryNameView(category: child) }
+                                else { Button { editing = child } label: { CategoryNameView(category: child) }.tint(.primary) }
                             }.onMove { from, to in store.moveCategories(bookID: parent.bookID, kind: parent.kind, parentID: parent.id, from: from, to: to) }
                             if !store.state.categories.contains(where: { $0.parentID == parent.id }) {
                                 Text("小カテゴリはまだありません。").foregroundStyle(.secondary)
@@ -425,12 +426,8 @@ struct CategorySelectionView: View {
             }
             Section("大カテゴリを選択") {
                 ForEach(store.state.orderedCategories(bookID: bookID, kind: kind, parentID: nil).filter { store.state.isCategoryAvailable($0) }) { parent in
-                    if parent.isUncategorized {
-                        selectionButton(parent)
-                    } else {
-                        NavigationLink { CategoryChildSelectionView(parent: parent, currentID: currentID, onSelect: onSelect) } label: {
-                            HStack { Text(parent.name); Spacer(); if isSelected(parent) { Image(systemName: "checkmark").foregroundStyle(.teal) } }
-                        }
+                    NavigationLink { CategoryChildSelectionView(parent: parent, currentID: currentID, onSelect: onSelect) } label: {
+                        HStack { Text(parent.name); Spacer(); if isSelected(parent) { Image(systemName: "checkmark").foregroundStyle(.teal) } }
                     }
                 }
             }
@@ -444,13 +441,9 @@ struct CategorySelectionView: View {
             .sheet(isPresented: $adding) { NavigationStack { CategoryEditorView(bookID: bookID, kind: kind) } }
     }
     private func isSelected(_ parent: BudgetCategory) -> Bool {
-        currentID == parent.id || store.state.categories.contains { $0.id == currentID && $0.parentID == parent.id }
+        (currentID == nil && parent.isUncategorized) || store.state.categories.contains { $0.id == currentID && $0.parentID == parent.id }
     }
-    private func selectionButton(_ category: BudgetCategory) -> some View {
-        Button { onSelect(category.id) } label: {
-            HStack { Text(category.name); Spacer(); if currentID == category.id || currentID == nil { Image(systemName: "checkmark") } }
-        }
-    }
+
 }
 
 struct CategoryChildSelectionView: View {
@@ -462,14 +455,13 @@ struct CategoryChildSelectionView: View {
     var body: some View {
         List {
             Section {
-                Button { onSelect(parent.id) } label: {
-                    HStack { Text("\(parent.name)（大カテゴリで登録）"); Spacer(); if currentID == parent.id { Image(systemName: "checkmark") } }
-                }
+                Text("小カテゴリを選んでください。大カテゴリだけでは登録できません。")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("小カテゴリを選択") {
                 ForEach(store.state.orderedCategories(bookID: parent.bookID, kind: parent.kind, parentID: parent.id).filter { store.state.isCategoryAvailable($0) }) { child in
                     Button { onSelect(child.id) } label: {
-                        HStack { Text(child.name); Spacer(); if currentID == child.id { Image(systemName: "checkmark") } }
+                        HStack { Text(child.name); Spacer(); if currentID == child.id || (currentID == nil && child.isUncategorized) { Image(systemName: "checkmark") } }
                     }
                 }
                 if !store.state.categories.contains(where: { $0.parentID == parent.id && store.state.isCategoryAvailable($0) }) {
@@ -477,7 +469,11 @@ struct CategoryChildSelectionView: View {
                 }
             }
         }.navigationTitle(parent.name)
-            .toolbar { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("小カテゴリを追加").disabled(!store.canWrite) }
+            .toolbar {
+                if !parent.isUncategorized {
+                    Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("小カテゴリを追加").disabled(!store.canWrite)
+                }
+            }
             .sheet(isPresented: $adding) {
                 NavigationStack { CategoryEditorView(bookID: parent.bookID, kind: parent.kind, initialParentID: parent.id) }
             }
@@ -492,7 +488,7 @@ struct BasicCategorySetView: View {
     var body: some View {
         List {
             Section {
-                Text("食費など一般的な項目のひな形です。追加後も自由に名称や所属先を変更できます。")
+                Text("確定した初期カテゴリセットです。追加後も標準未分類以外は名称や所属先を変更できます。")
                 Text("同じ場所にある同名カテゴリは再利用し、既存の取引・名前・順番は変更しません。アーカイブ済みの大カテゴリは配下ごと追加をスキップします。")
             }.font(.footnote)
             ForEach([EntryKind.expense, .income]) { kind in

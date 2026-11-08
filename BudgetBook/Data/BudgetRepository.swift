@@ -37,10 +37,15 @@ struct JSONBudgetRepository: RestoreRepository {
             // 既存の単体Snapshot形式を読み、次の保存時に移行する。
             storage = BudgetStorage(snapshot: try JSONDecoder().decode(BudgetSnapshot.self, from: data), rollback: nil)
         }
-        guard storage.snapshot.schemaVersion == 1 else { throw BackupError.unsupportedVersion }
+        guard [1, 2].contains(storage.snapshot.schemaVersion) else { throw BackupError.unsupportedVersion }
         return storage
     }
-    func load() throws -> BudgetSnapshot? { try storage()?.snapshot }
+    func load() throws -> BudgetSnapshot? {
+        guard let current = try storage() else { return nil }
+        let migrated = try current.snapshot.migratedCategoryHierarchy()
+        if migrated != current.snapshot { try replace(migrated, rollback: current.rollback) }
+        return migrated
+    }
     func rollback() throws -> RollbackRecord? { try storage()?.rollback }
     func save(_ snapshot: BudgetSnapshot) throws {
         try replace(snapshot, rollback: storage()?.rollback)

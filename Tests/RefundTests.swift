@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 func runRefundChecks() throws {
-    var state = BudgetSnapshot.initial()
+    var state = testSnapshot()
     let book = state.books[0].id, wallet = state.accounts.first { $0.bookID == state.books[0].id }!.id
     var calendar = Calendar(identifier: .gregorian); calendar.timeZone = .current
     let january = calendar.date(from: DateComponents(year: 2026, month: 1, day: 15, hour: 17))!
@@ -26,7 +26,8 @@ func runRefundChecks() throws {
     let februaryEntries = state.orderedEntries(bookID: book).filter { calendar.isDate($0.date, equalTo: february, toGranularity: .month) }
     expect(BudgetSummary.totals(februaryEntries).expense == -500 && BudgetSummary.totals(februaryEntries).income == 0, "月をまたぐ返金は返金月の支出から控除")
     let amounts = state.categoryAmounts(bookID: book, kind: .expense, entries: februaryEntries)
-    expect(amounts[expense.categoryID!] == -500, "カテゴリ集計にも負の差引額を反映")
+    let uncategorizedParent = state.categories.first { $0.id == expense.categoryID }!.parentID!
+    expect(amounts[uncategorizedParent] == -500, "カテゴリ集計にも負の差引額を反映")
     var bad = refund; bad.id = UUID(); bad.amount = 501
     let before = state
     rejects("未返金額を超える新規返金は拒否") { try state.saveTransaction(bad) }
@@ -85,7 +86,7 @@ func runRefundChecks() throws {
     expect(deleted.entries.contains { $0.id == expense.id } && deleted.refundedAmount(for: expense.id) == 200, "返金だけ削除したら元支出を保持し未返金額を戻す")
     deleted = state; deleted.deleteTransaction(expense.id)
     expect(deleted.entries.isEmpty, "元支出削除では全関連返金も削除")
-    var fresh = BudgetSnapshot.initial()
+    var fresh = testSnapshot()
     let fbook = fresh.books[0].id, fwallet = fresh.accounts.first!.id
     var input = BudgetEntry(bookID: fbook, kind: .expense, amount: 999_999_999, date: january, sourceID: fwallet)
     _ = try fresh.validated(input)
@@ -114,7 +115,7 @@ func runRefundChecks() throws {
     let old = try JSONDecoder().decode(BudgetSnapshot.self, from: JSONSerialization.data(withJSONObject: legacy))
     expect(old.entries.allSatisfy { $0.createdAt == nil && $0.merchant == nil && $0.refundOfID == nil }, "新属性なしの旧JSONを読める")
     expect(old.orderedEntries(bookID: fbook).map(\.id) == old.entries.map(\.id), "旧取引の同日順は保存済み配列順を保持")
-    var withArchived = BudgetSnapshot.initial()
+    var withArchived = testSnapshot()
     let abook = withArchived.books[0].id, awallet = withArchived.accounts.first!.id
     let archivedTag = try withArchived.saveTag(bookID: abook, name: "古いタグ")
     var original = BudgetEntry(bookID: abook, kind: .expense, amount: 100, date: january, sourceID: awallet, tagIDs: [archivedTag])

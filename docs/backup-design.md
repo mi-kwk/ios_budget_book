@@ -46,3 +46,8 @@
 
 - [Apple AES.GCM](https://developer.apple.com/documentation/cryptokit/aes/gcm)
 - [Notion機能設計](https://app.notion.com/p/411232d7afe4814ea1dbf8a4ebb80875)
+
+
+## カテゴリ構造の移行
+
+SnapshotはschemaVersion 2へ更新。外側の暗号化形式・BackupPayload版は1を維持する。旧版1のSnapshotは旧制約で検証し、未分類親子と通常カテゴリの移行用の子へ取引を割り当てて版2へ移行する。旧ファイルからの復元・旧退避への戻しでも適用する。詳細と維持する項目は `implementation-status.md` のカテゴリ移行の節を参照。新版データの旧アプリでの読込は非対応。

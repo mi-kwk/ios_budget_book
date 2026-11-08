@@ -36,7 +36,7 @@ func cloudRejects(_ message: String, _ work: () async throws -> Void) async {
 @MainActor
 func runCloudChecks() async throws {
     let now = Date(timeIntervalSince1970: 1_793_491_200)
-    let initial = BudgetSnapshot.initial()
+    let initial = testSnapshot()
     let digest = try CloudBackupPolicy.digest(initial)
     var settings = CloudBackupSettings()
     settings.enabled = true; settings.accountFingerprint = "account-A"

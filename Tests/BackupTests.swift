@@ -28,7 +28,7 @@ func expectBackup(_ condition: Bool, _ message: String) { expect(condition, mess
 func runBackupChecks() throws {
     let password = "backup-test-password-2026"
     let now = Date(timeIntervalSince1970: 1_793_491_200)
-    var original = BudgetSnapshot.initial()
+    var original = testSnapshot()
     let bookID = original.books[0].id
     let wallet = original.accounts.first { $0.bookID == bookID }!.id
     let tag = try original.saveTag(bookID: bookID, name: "保存確認")
