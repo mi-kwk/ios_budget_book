@@ -24,10 +24,20 @@ struct RootView: View {
     private func shell<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         NavigationStack {
             content().navigationTitle(title)
+                .safeAreaInset(edge: .top) {
+                    if store.currentBook?.archived == true {
+                        HStack {
+                            Label("\(store.currentBook?.name ?? "家計簿")：閲覧専用", systemImage: "archivebox")
+                                .font(.caption)
+                            Spacer()
+                            Button("閲覧を終了") { store.endArchivedViewing() }.font(.caption)
+                        }.padding(10).background(.thinMaterial)
+                    }
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) {
                         Menu {
-                            ForEach(store.state.books) { book in
+                            ForEach(store.state.orderedBooks(includeArchived: false)) { book in
                                 Button { store.selectBook(book.id) } label: {
                                     if store.bookID == book.id { Label(book.name, systemImage: "checkmark") }
                                     else { Text(book.name) }
@@ -38,10 +48,10 @@ struct RootView: View {
                     ToolbarItemGroup(placement: .topBarTrailing) {
                         Button { showSettings = true } label: { Image(systemName: "gearshape") }.accessibilityLabel("設定")
                         Button { showEntry = true } label: { Image(systemName: "plus") }
-                            .accessibilityLabel("取引を登録").disabled(store.bookID == nil || !store.canWrite)
+                            .accessibilityLabel("取引を登録").disabled(!store.canEditCurrentBook)
                     }
                 }
-        }
+        }.id("\(title)-\(store.bookID?.uuidString ?? "none")")
     }
 }
 
@@ -268,6 +278,10 @@ struct EntryDetail: View {
             if let raw = store.state.entries.first(where: { $0.id == entryID }) {
                 let entry = store.state.effectiveEntry(raw)
                 List {
+                    if store.state.books.first(where: { $0.id == entry.bookID })?.archived == true {
+                        Label("アーカイブ済みの家計簿：閲覧専用", systemImage: "lock")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     EntryRow(entry: entry)
                     LabeledContent("出金元", value: store.accountName(entry.sourceID))
                     LabeledContent("入金先", value: store.accountName(entry.destinationID))
@@ -278,7 +292,7 @@ struct EntryDetail: View {
                         Section("返金") {
                             LabeledContent("返金合計", value: yen(refunded))
                             LabeledContent("未返金額", value: yen(entry.amount - refunded))
-                            Button("この支出の返金を登録") { addingRefund = true }.disabled(refunded >= entry.amount)
+                            Button("この支出の返金を登録") { addingRefund = true }.disabled(refunded >= entry.amount || !store.canEditBook(entry.bookID))
                             ForEach(refunds) { refund in
                                 NavigationLink { EntryDetail(entryID: refund.id) } label: { EntryRow(entry: refund) }
                             }
@@ -289,8 +303,8 @@ struct EntryDetail: View {
                             NavigationLink("元の支出を開く") { EntryDetail(entryID: originalID) }
                         }
                     }
-                    Button("編集") { editing = true }
-                    Button("削除", role: .destructive) { deleting = true }
+                    Button("編集") { editing = true }.disabled(!store.canEditBook(entry.bookID))
+                    Button("削除", role: .destructive) { deleting = true }.disabled(!store.canEditBook(entry.bookID))
                 }
                 .sheet(isPresented: $addingRefund) { NavigationStack { EntryEditor(bookID: entry.bookID, refundOriginal: entry) } }
                 .sheet(isPresented: $editing) { NavigationStack { EntryEditor(bookID: entry.bookID, existing: entry) } }

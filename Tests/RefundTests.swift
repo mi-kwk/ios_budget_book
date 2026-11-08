@@ -82,9 +82,9 @@ func runRefundChecks() throws {
     let repository = JSONBudgetRepository(url: folder.appendingPathComponent("state.json"))
     try repository.save(state)
     expectBackup(try repository.load() == state, "返金と関連を通常ファイル保存から再読込")
-    var deleted = state; deleted.deleteTransaction(refund.id)
+    var deleted = state; try deleted.deleteTransaction(refund.id)
     expect(deleted.entries.contains { $0.id == expense.id } && deleted.refundedAmount(for: expense.id) == 200, "返金だけ削除したら元支出を保持し未返金額を戻す")
-    deleted = state; deleted.deleteTransaction(expense.id)
+    deleted = state; try deleted.deleteTransaction(expense.id)
     expect(deleted.entries.isEmpty, "元支出削除では全関連返金も削除")
     var fresh = testSnapshot()
     let fbook = fresh.books[0].id, fwallet = fresh.accounts.first!.id

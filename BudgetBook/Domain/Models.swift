@@ -15,6 +15,9 @@ struct HouseholdBook: Identifiable, Codable, Equatable {
     // 仮の初期値。仕様確定後に変更可能。
     var showsTagSummary = true
     var hiddenTagIDs: Set<UUID> = []
+    var isArchived: Bool? = nil
+    var order: Int? = nil
+    var archived: Bool { isArchived ?? false }
 }
 
 struct MoneyAccount: Identifiable, Codable, Equatable {
@@ -88,7 +91,7 @@ struct BudgetSnapshot: Codable, Equatable {
 
     func validated(_ input: BudgetEntry, previous: BudgetEntry? = nil) throws -> BudgetEntry {
         var entry = input
-        guard books.contains(where: { $0.id == entry.bookID }) else { throw BudgetError.invalidBook }
+        try requireEditableBook(entry.bookID)
         guard entry.amount > 0, entry.amount <= 999_999_999 else { throw BudgetError.invalidAmount }
         guard entry.date.timeIntervalSince1970.isFinite else { throw BudgetError.invalidDate }
         guard (entry.merchant ?? "").count <= 100, entry.memo.count <= 1000 else { throw BudgetError.textTooLong }
@@ -159,11 +162,15 @@ struct BudgetSnapshot: Codable, Equatable {
 }
 
 enum BudgetError: LocalizedError {
+    case archivedBook, lastActiveBook, invalidDataEntry
     case invalidDate, textTooLong, immutableKind, invalidRefund, refundDate, refundConflict
     case invalidBook, invalidAmount, invalidAccount, missingTransferAccount, sameAccount, invalidCategory, invalidTag, emptyName, duplicateName, protectedItem
     var errorDescription: String? {
         switch self {
         case .invalidBook: "家計簿が見つかりません。"
+        case .invalidDataEntry: "取引が見つかりません。"
+        case .archivedBook: "この家計簿は閲覧専用です。変更するには設定の家計簿管理から復元してください。"
+        case .lastActiveBook: "利用可能な最後の1冊はアーカイブできません。別の家計簿を作成してから操作してください。"
         case .invalidAmount: "金額は1〜999,999,999円の整数で入力してください。"
         case .invalidDate: "有効な日付を選択してください。"
         case .textTooLong: "お店・相手先は100文字、メモは1,000文字以内で入力してください。"
@@ -221,6 +228,7 @@ extension BudgetSnapshot {
 
     @discardableResult
     mutating func saveCategory(id: UUID? = nil, bookID: UUID, kind: EntryKind, name: String, parentID: UUID?) throws -> UUID {
+        try requireEditableBook(bookID)
         guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
         guard kind != .transfer && kind != .refund else { throw BudgetError.invalidCategory }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -256,6 +264,7 @@ extension BudgetSnapshot {
     }
 
     mutating func setCategoryArchived(id: UUID, bookID: UUID, archived: Bool) throws {
+        try requireEditableBook(bookID)
         guard let index = categories.firstIndex(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidCategory }
         guard !categories[index].isUncategorized else { throw BudgetError.protectedItem }
         // 子自身のアーカイブ状態には触れず、親の状態から利用可否を判定する。
@@ -263,6 +272,7 @@ extension BudgetSnapshot {
     }
 
     mutating func reorderCategories(bookID: UUID, kind: EntryKind, parentID: UUID?, ids: [UUID]) throws {
+        try requireEditableBook(bookID)
         let siblings = orderedCategories(bookID: bookID, kind: kind, parentID: parentID)
         guard ids.count == siblings.count, Set(ids).count == ids.count, Set(ids) == Set(siblings.map(\.id)) else { throw BudgetError.invalidCategory }
         for (position, id) in ids.enumerated() {
@@ -328,6 +338,7 @@ struct BasicCategoryGroup: Identifiable {
 extension BudgetSnapshot {
     /// 再実行しても同じ場所に重複を作らず、既存の名称・順番・アーカイブ状態を維持する。
     mutating func addBasicCategories(bookID: UUID) throws {
+        try requireEditableBook(bookID)
         guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
         for kind in [EntryKind.expense, .income] {
             for group in BasicCategoryGroup.groups(for: kind) {
@@ -357,6 +368,7 @@ extension BudgetSnapshot {
     }
     @discardableResult
     mutating func saveTag(id: UUID? = nil, bookID: UUID, name: String) throws -> UUID {
+        try requireEditableBook(bookID)
         guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw BudgetError.emptyName }
@@ -369,6 +381,7 @@ extension BudgetSnapshot {
     }
     @discardableResult
     mutating func saveAccount(id: UUID? = nil, bookID: UUID, name: String) throws -> UUID {
+        try requireEditableBook(bookID)
         guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw BudgetError.emptyName }
@@ -384,15 +397,18 @@ extension BudgetSnapshot {
         return account.id
     }
     mutating func setTagArchived(id: UUID, bookID: UUID, archived: Bool) throws {
+        try requireEditableBook(bookID)
         guard let index = tags.firstIndex(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidTag }
         tags[index].isArchived = archived
     }
     mutating func setAccountArchived(id: UUID, bookID: UUID, archived: Bool) throws {
+        try requireEditableBook(bookID)
         guard let index = accounts.firstIndex(where: { $0.id == id && $0.bookID == bookID }) else { throw BudgetError.invalidAccount }
         guard !accounts[index].isWallet else { throw BudgetError.protectedItem }
         accounts[index].isArchived = archived
     }
     mutating func reorderAccounts(bookID: UUID, ids: [UUID]) throws {
+        try requireEditableBook(bookID)
         let items = orderedAccounts(bookID: bookID)
         guard Set(ids).count == ids.count, ids.count == items.count, Set(ids) == Set(items.map(\.id)) else { throw BudgetError.invalidAccount }
         for (position, id) in ids.enumerated() {
@@ -408,7 +424,7 @@ extension BudgetSnapshot {
         func valid(_ condition: Bool) throws { if !condition { throw BackupError.invalidData } }
         func unique(_ ids: [UUID]) -> Bool { Set(ids).count == ids.count }
         func named(_ name: String) -> Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && name.utf8.count <= 10_000 }
-        try valid(!books.isEmpty && unique(books.map(\.id)) && unique(accounts.map(\.id)) && unique(categories.map(\.id)) && unique(tags.map(\.id)) && unique(entries.map(\.id)))
+        try valid(books.contains(where: { !$0.archived }) && unique(books.map(\.id)) && unique(accounts.map(\.id)) && unique(categories.map(\.id)) && unique(tags.map(\.id)) && unique(entries.map(\.id)))
         let bookIDs = Set(books.map(\.id))
         let accountMap = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
         let categoryMap = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
@@ -522,7 +538,9 @@ extension BudgetSnapshot {
         }
         self = next
     }
-    mutating func deleteTransaction(_ id: UUID) {
+    mutating func deleteTransaction(_ id: UUID) throws {
+        guard let entry = entries.first(where: { $0.id == id }) else { throw BudgetError.invalidDataEntry }
+        try requireEditableBook(entry.bookID)
         entries.removeAll { $0.id == id || ($0.kind == .refund && $0.refundOfID == id) }
     }
 }
@@ -541,7 +559,8 @@ extension BudgetSnapshot {
         guard !name.isEmpty else { throw BudgetError.emptyName }
         guard !books.contains(where: { Self.categoryNameKey($0.name) == Self.categoryNameKey(name) }) else { throw BudgetError.duplicateName }
         var next = self
-        let book = HouseholdBook(name: name, isShared: shared)
+        let nextOrder = books.enumerated().map { $0.element.order ?? $0.offset }.max().map { $0 + 1 } ?? 0
+        let book = HouseholdBook(name: name, isShared: shared, order: nextOrder)
         next.books.append(book)
         next.accounts.append(MoneyAccount(bookID: book.id, name: "お財布", isWallet: true))
         try next.addBasicCategories(bookID: book.id)
@@ -598,5 +617,65 @@ extension BudgetSnapshot {
         next.schemaVersion = 2
         try next.validateBackup()
         return next
+    }
+}
+
+
+extension BudgetSnapshot {
+    func orderedBooks(includeArchived: Bool = true) -> [HouseholdBook] {
+        books.enumerated().filter { includeArchived || !$0.element.archived }.sorted {
+            let left = $0.element.order ?? $0.offset, right = $1.element.order ?? $1.offset
+            return left == right ? $0.offset < $1.offset : left < right
+        }.map(\.element)
+    }
+    func requireEditableBook(_ id: UUID) throws {
+        guard let book = books.first(where: { $0.id == id }) else { throw BudgetError.invalidBook }
+        guard !book.archived else { throw BudgetError.archivedBook }
+    }
+    mutating func renameBook(id: UUID, name: String) throws {
+        try requireEditableBook(id)
+        let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else { throw BudgetError.emptyName }
+        guard !books.contains(where: { $0.id != id && Self.categoryNameKey($0.name) == Self.categoryNameKey(name) }) else { throw BudgetError.duplicateName }
+        books[books.firstIndex { $0.id == id }!].name = name
+    }
+    mutating func selectActiveBook(_ id: UUID) throws {
+        try requireEditableBook(id)
+        selectedBookID = id
+    }
+    mutating func normalizeBookSelection() throws {
+        guard let first = orderedBooks(includeArchived: false).first else { throw BudgetError.lastActiveBook }
+        if !books.contains(where: { $0.id == selectedBookID && !$0.archived }) { selectedBookID = first.id }
+    }
+    func preparedForUse() throws -> BudgetSnapshot {
+        var snapshot = try migratedCategoryHierarchy()
+        try snapshot.normalizeBookSelection()
+        return snapshot
+    }
+    mutating func setBookArchived(id: UUID, archived: Bool) throws {
+        guard let index = books.firstIndex(where: { $0.id == id }) else { throw BudgetError.invalidBook }
+        guard books[index].archived != archived else { return }
+        if archived {
+            guard books.filter({ !$0.archived }).count > 1 else { throw BudgetError.lastActiveBook }
+        }
+        books[index].isArchived = archived
+        try normalizeBookSelection()
+    }
+    mutating func reorderBooks(ids: [UUID]) throws {
+        let active = orderedBooks(includeArchived: false)
+        guard ids.count == active.count, Set(ids).count == ids.count, Set(ids) == Set(active.map(\.id)) else { throw BudgetError.invalidBook }
+        for (position, id) in ids.enumerated() { books[books.firstIndex { $0.id == id }!].order = position }
+    }
+    /// Any generic update must keep archived data unchanged; only clearing its archive flag is allowed.
+    func validateArchivedBookChanges(from previous: BudgetSnapshot) throws {
+        for old in previous.books where old.archived {
+            guard var book = books.first(where: { $0.id == old.id }) else { throw BudgetError.archivedBook }
+            book.isArchived = old.isArchived
+            guard book == old,
+                  accounts.filter({ $0.bookID == old.id }) == previous.accounts.filter({ $0.bookID == old.id }),
+                  categories.filter({ $0.bookID == old.id }) == previous.categories.filter({ $0.bookID == old.id }),
+                  tags.filter({ $0.bookID == old.id }) == previous.tags.filter({ $0.bookID == old.id }),
+                  entries.filter({ $0.bookID == old.id }) == previous.entries.filter({ $0.bookID == old.id }) else { throw BudgetError.archivedBook }
+        }
     }
 }

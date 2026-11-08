@@ -6,7 +6,7 @@ struct SettingsView: View {
     var body: some View {
         List {
             Section("家計簿") {
-                NavigationLink("家計簿の管理", destination: BooksView())
+                NavigationLink("家計簿の管理", destination: BooksView(onView: { dismiss() }))
                 Text("共有用も、現在はこの端末の利用者のみが操作します。").font(.caption).foregroundStyle(.secondary)
             }
             Section("選択中：\(store.currentBook?.name ?? "なし")") {
@@ -27,17 +27,90 @@ struct SettingsView: View {
 }
 struct BooksView: View {
     @EnvironmentObject private var store: BudgetStore
+    var onView: () -> Void = {}
     @State private var name = ""
     @State private var shared = false
     var body: some View {
-        Form {
-            Section("家計簿一覧") { ForEach(store.state.books) { book in Button { store.selectBook(book.id) } label: { HStack { Text(book.name); Spacer(); if store.bookID == book.id { Image(systemName: "checkmark") } } } } }
+        List {
+            Section("利用可能な家計簿") {
+                ForEach(store.state.orderedBooks(includeArchived: false)) { book in
+                    NavigationLink { BookManagementDetail(book: book, onView: onView) } label: {
+                        HStack {
+                            Text(book.name); Spacer()
+                            if store.state.selectedBookID == book.id { Image(systemName: "checkmark").foregroundStyle(.teal) }
+                        }
+                    }
+                }.onMove { store.moveBooks(from: $0, to: $1) }
+                Text("項目を開くと名称変更・アーカイブができます。「編集」で表示順を変更できます。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            let archived = store.state.orderedBooks().filter { $0.archived }
+            if !archived.isEmpty {
+                Section("アーカイブ済み") {
+                    ForEach(archived) { book in
+                        NavigationLink { BookManagementDetail(book: book, onView: onView) } label: {
+                            Label(book.name, systemImage: "archivebox")
+                        }
+                    }
+                }
+            }
             Section("家計簿を追加") {
                 TextField("名称", text: $name)
                 Toggle("共有用（初期版は本人のみ操作）", isOn: $shared)
-                Button("追加") { store.addBook(name: name, shared: shared); if store.errorMessage == nil { name = "" } }.disabled(!store.canWrite)
+                Button("追加") { store.addBook(name: name, shared: shared); if store.errorMessage == nil { name = "" } }
+                    .disabled(!store.canWrite || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }.navigationTitle("家計簿の管理")
+            .toolbar { EditButton().disabled(!store.canWrite) }
+    }
+}
+
+struct BookManagementDetail: View {
+    @EnvironmentObject private var store: BudgetStore
+    @Environment(\.dismiss) private var dismiss
+    let bookID: UUID
+    var onView: () -> Void
+    @State private var name: String
+    @State private var confirmingArchive = false
+    init(book: HouseholdBook, onView: @escaping () -> Void) {
+        bookID = book.id; self.onView = onView
+        _name = State(initialValue: book.name)
+    }
+    var body: some View {
+        Group {
+            if let book = store.state.books.first(where: { $0.id == bookID }) {
+                Form {
+                    Section("名称") {
+                        TextField("家計簿名", text: $name).disabled(book.archived || !store.canWrite)
+                        if !book.archived {
+                            Button("名称を保存") { if store.renameBook(id: bookID, name: name) { dismiss() } }
+                                .disabled(!store.canWrite || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                    Section {
+                        if book.archived {
+                            Text("アーカイブ済みです。取引・設定の変更には復元が必要です。")
+                                .font(.footnote).foregroundStyle(.secondary)
+                            Button("閲覧専用で開く") { store.viewArchivedBook(bookID); onView() }
+                            Button("この家計簿を復元") { _ = store.setBookArchived(id: bookID, archived: false) }.disabled(!store.canWrite)
+                        } else {
+                            Button("この家計簿を開く") { store.selectBook(bookID); onView() }.disabled(!store.canWrite)
+                            Button("アーカイブ", role: .destructive) { confirmingArchive = true }
+                                .disabled(!store.canWrite || store.state.orderedBooks(includeArchived: false).count <= 1)
+                            if store.state.orderedBooks(includeArchived: false).count <= 1 {
+                                Text("利用可能な最後の1冊はアーカイブできません。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Text("アーカイブしても取引やカテゴリは残ります。利用可能な家計簿とアーカイブ済みを通して、同じ名前は使えません。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }.navigationTitle(book.name)
+                    .confirmationDialog("この家計簿をアーカイブしますか？", isPresented: $confirmingArchive, titleVisibility: .visible) {
+                        Button("アーカイブ", role: .destructive) { _ = store.setBookArchived(id: bookID, archived: true) }
+                    } message: { Text("通常の切替候補から外し、閲覧専用にします。取引は削除しません。編集中の名称は保存しません。") }
+            } else { ContentUnavailableView("家計簿が見つかりません", systemImage: "books.vertical") }
+        }
     }
 }
 
@@ -79,8 +152,8 @@ struct MasterListView: View {
             }
         }.navigationTitle(type.rawValue)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { if type == .account { EditButton().disabled(!store.canWrite) } }
-                ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("追加").disabled(!store.canWrite) }
+                ToolbarItem(placement: .topBarTrailing) { if type == .account { EditButton().disabled(!store.canEditCurrentBook) } }
+                ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("追加").disabled(!store.canEditCurrentBook) }
             }
             .sheet(isPresented: $adding) {
                 if let bookID = store.bookID { NavigationStack { MasterEditorView(type: type, bookID: bookID) } }
@@ -99,7 +172,7 @@ struct MasterListView: View {
                 Spacer()
                 Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
             }
-        }.tint(.primary).disabled(!store.canWrite)
+        }.tint(.primary).disabled(!store.canEditCurrentBook)
     }
 }
 
@@ -138,7 +211,7 @@ struct MasterEditorView: View {
             }
             if let existing {
                 Section {
-                    Button(existing.archived ? "復元" : "アーカイブ") { confirmingArchive = true }.disabled(!store.canWrite)
+                    Button(existing.archived ? "復元" : "アーカイブ") { confirmingArchive = true }.disabled(!store.canEditCurrentBook)
                     Text("この操作では編集中の名前は保存しません。アーカイブ済みの項目は新しい取引では選択できません。").font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -150,7 +223,7 @@ struct MasterEditorView: View {
                     Button("保存") {
                         if store.saveMaster(id: existing?.id, bookID: bookID, name: name, type: type) != nil { dismiss() }
                         else { captureError() }
-                    }.disabled(!store.canWrite || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || archivedMatch != nil)
+                    }.disabled(!store.canEditCurrentBook || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || archivedMatch != nil)
                 }
             }
             .confirmationDialog(existing?.archived == true ? "この項目を復元しますか？" : "新しい取引の選択候補から外します。過去の取引は残ります。", isPresented: $confirmingArchive, titleVisibility: .visible) {
@@ -201,7 +274,7 @@ struct AccountSelectionView: View {
         }.navigationTitle(title)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("入出金元を追加").disabled(!store.canWrite) }
+                ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("入出金元を追加").disabled(!store.canEditCurrentBook) }
             }
             .sheet(isPresented: $adding) { NavigationStack { MasterEditorView(type: .account, bookID: bookID) } }
     }
@@ -229,7 +302,7 @@ struct TagDisplayView: View {
                 }))
             }
             Text("非表示にしても、取引への付与・検索には使えます。").font(.caption).foregroundStyle(.secondary)
-        }.navigationTitle("タグ集計の表示")
+        }.disabled(!store.canEditCurrentBook).navigationTitle("タグ集計の表示")
     }
 }
 
@@ -256,16 +329,16 @@ struct CategoryManagementView: View {
                     }.onMove { from, to in store.moveCategories(bookID: bookID, kind: kind, parentID: nil, from: from, to: to) }
                 }
                 Section {
-                    Button("基本セットを確認・追加") { showingBasicSet = true }.disabled(!store.canWrite)
+                    Button("基本セットを確認・追加") { showingBasicSet = true }.disabled(!store.canEditCurrentBook)
                     Text("基本カテゴリは設定時のひな形です。名称や分類は自由に変更できます。標準の未分類は保護されます。")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }.navigationTitle("カテゴリ")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { EditButton().disabled(!store.canWrite) }
+                ToolbarItem(placement: .topBarTrailing) { EditButton().disabled(!store.canEditCurrentBook) }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("大カテゴリを追加").disabled(!store.canWrite)
+                    Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("大カテゴリを追加").disabled(!store.canEditCurrentBook)
                 }
             }
             .sheet(isPresented: $adding) {
@@ -307,8 +380,8 @@ struct CategoryChildrenView: View {
                     Section("大カテゴリ") {
                         CategoryNameView(category: parent)
                         if !parent.isUncategorized {
-                            Button("名称を変更") { editing = parent }.disabled(!store.canWrite)
-                            Button(parent.isArchived ? "復元" : "アーカイブ") { confirmsArchive = true }.disabled(!store.canWrite)
+                            Button("名称を変更") { editing = parent }.disabled(!store.canEditCurrentBook)
+                            Button(parent.isArchived ? "復元" : "アーカイブ") { confirmsArchive = true }.disabled(!store.canEditCurrentBook)
                         }
                     }
                     Group {
@@ -329,10 +402,10 @@ struct CategoryChildrenView: View {
                 }.navigationTitle(parent.name)
                     .toolbar {
                         if !parent.isUncategorized {
-                            ToolbarItem(placement: .topBarTrailing) { EditButton().disabled(!store.canWrite) }
+                            ToolbarItem(placement: .topBarTrailing) { EditButton().disabled(!store.canEditCurrentBook) }
                             ToolbarItem(placement: .topBarTrailing) {
                                 Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("小カテゴリを追加")
-                                    .disabled(parent.isArchived || !store.canWrite)
+                                    .disabled(parent.isArchived || !store.canEditCurrentBook)
                             }
                         }
                     }
@@ -388,7 +461,7 @@ struct CategoryEditorView: View {
                     Button(existing.isArchived ? "復元して閉じる" : "アーカイブして閉じる") {
                         store.toggleArchive(existing.id, type: .category)
                         if let message = store.errorMessage { error = message; store.errorMessage = nil } else { dismiss() }
-                    }.disabled(!store.canWrite)
+                    }.disabled(!store.canEditCurrentBook)
                     Text("アーカイブ操作では、編集中の名前・所属先は保存しません。").font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -401,7 +474,7 @@ struct CategoryEditorView: View {
                         if let id = store.saveCategory(id: existing?.id, bookID: bookID, kind: kind, name: name, parentID: parentID) {
                             dismiss(); onSaved?(id)
                         } else { error = store.errorMessage; store.errorMessage = nil }
-                    }.disabled(!store.canWrite || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }.disabled(!store.canEditCurrentBook || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
     }
@@ -435,7 +508,7 @@ struct CategorySelectionView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("カテゴリを追加").disabled(!store.canWrite)
+                    Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("カテゴリを追加").disabled(!store.canEditCurrentBook)
                 }
             }
             .sheet(isPresented: $adding) { NavigationStack { CategoryEditorView(bookID: bookID, kind: kind) } }
@@ -471,7 +544,7 @@ struct CategoryChildSelectionView: View {
         }.navigationTitle(parent.name)
             .toolbar {
                 if !parent.isUncategorized {
-                    Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("小カテゴリを追加").disabled(!store.canWrite)
+                    Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("小カテゴリを追加").disabled(!store.canEditCurrentBook)
                 }
             }
             .sheet(isPresented: $adding) {
@@ -505,7 +578,7 @@ struct BasicCategorySetView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("追加する") { if store.update({ try $0.addBasicCategories(bookID: bookID) }) { dismiss() } }.disabled(!store.canWrite)
+                    Button("追加する") { if store.update({ try $0.addBasicCategories(bookID: bookID) }) { dismiss() } }.disabled(!store.canEditCurrentBook)
                 }
             }
     }

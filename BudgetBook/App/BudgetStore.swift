@@ -31,7 +31,10 @@ final class BudgetStore: ObservableObject {
         }
         if canWrite { refreshRollback() }
     }
-    var bookID: UUID? { state.selectedBookID }
+    @Published private(set) var viewingArchivedBookID: UUID?
+    var bookID: UUID? { viewingArchivedBookID ?? state.selectedBookID }
+    var canEditCurrentBook: Bool { bookID.map(canEditBook) ?? false }
+    func canEditBook(_ id: UUID) -> Bool { canWrite && state.books.contains { $0.id == id && !$0.archived } }
     var currentBook: HouseholdBook? { state.books.first { $0.id == bookID } }
     var accounts: [MoneyAccount] { bookID.map { state.orderedAccounts(bookID: $0) } ?? [] }
     var categories: [BudgetCategory] { state.categories.filter { $0.bookID == bookID }.sorted { $0.order < $1.order } }
@@ -53,23 +56,42 @@ final class BudgetStore: ObservableObject {
         do {
             var next = state
             try change(&next)
+            try next.validateArchivedBookChanges(from: state)
             try repository.save(next)
             state = next
             scheduleCloudBackup()
             return true
         } catch { errorMessage = error.localizedDescription; return false }
     }
-    func selectBook(_ id: UUID) { update { $0.selectedBookID = id } }
+    func selectBook(_ id: UUID) {
+        if update({ try $0.selectActiveBook(id) }) { viewingArchivedBookID = nil }
+    }
+    func viewArchivedBook(_ id: UUID) {
+        guard state.books.contains(where: { $0.id == id && $0.archived }) else { return }
+        viewingArchivedBookID = id
+    }
+    func endArchivedViewing() { viewingArchivedBookID = nil }
+    func renameBook(id: UUID, name: String) -> Bool { update { try $0.renameBook(id: id, name: name) } }
+    func setBookArchived(id: UUID, archived: Bool) -> Bool {
+        let saved = update { try $0.setBookArchived(id: id, archived: archived) }
+        if saved, viewingArchivedBookID == id { viewingArchivedBookID = nil }
+        return saved
+    }
+    func moveBooks(from: IndexSet, to: Int) {
+        update { snapshot in
+            var ids = snapshot.orderedBooks(includeArchived: false).map(\.id)
+            ids.move(fromOffsets: from, toOffset: to)
+            try snapshot.reorderBooks(ids: ids)
+        }
+    }
     func saveEntry(_ entry: BudgetEntry) -> Bool {
         update { snapshot in
             try snapshot.saveTransaction(entry)
         }
     }
-    func deleteEntry(_ id: UUID) { update { $0.deleteTransaction(id) } }
+    func deleteEntry(_ id: UUID) { update { try $0.deleteTransaction(id) } }
     func addBook(name: String, shared: Bool) {
-        update { snapshot in
-            try snapshot.createBook(name: name, shared: shared)
-        }
+        if update({ try $0.createBook(name: name, shared: shared) }) { viewingArchivedBookID = nil }
     }
     func toggleArchive(_ id: UUID, type: MasterType) {
         update { snapshot in
@@ -125,11 +147,12 @@ final class BudgetStore: ObservableObject {
     func restoreBackup(_ payload: BackupPayload) throws {
         guard canWrite, let storage = repository as? any RestoreRepository else { throw BackupError.invalidData }
         guard !cloudBusy else { throw CloudBackupError.unavailable }
-        var restored = try payload.snapshot.migratedCategoryHierarchy()
+        var restored = try payload.snapshot.preparedForUse()
         if restored.cloudBackupSettings != nil { restored.cloudBackupSettings?.pausedAfterRestore = true }
         cloudDebounce?.cancel()
         let record = try RestoreCoordinator(repository: storage, keys: DeviceRollbackKeyStore()).restore(restored)
         state = restored
+        viewingArchivedBookID = nil
         rollbackRecord = record
     }
     func undoRestore() throws {
@@ -140,6 +163,7 @@ final class BudgetStore: ObservableObject {
             if snapshot.cloudBackupSettings != nil { snapshot.cloudBackupSettings?.pausedAfterRestore = true }
         }
         rollbackRecord = nil
+        viewingArchivedBookID = nil
     }
     func clearRollback() throws {
         guard let storage = repository as? any RestoreRepository else { throw BackupError.noRollback }

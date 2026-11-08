@@ -42,7 +42,7 @@ struct JSONBudgetRepository: RestoreRepository {
     }
     func load() throws -> BudgetSnapshot? {
         guard let current = try storage() else { return nil }
-        let migrated = try current.snapshot.migratedCategoryHierarchy()
+        let migrated = try current.snapshot.preparedForUse()
         if migrated != current.snapshot { try replace(migrated, rollback: current.rollback) }
         return migrated
     }

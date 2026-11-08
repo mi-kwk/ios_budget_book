@@ -93,7 +93,7 @@ struct EntryEditor: View {
         .navigationTitle(existing == nil ? (kind == .refund ? "返金を登録" : "取引を登録") : "取引を編集")
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("取消") { if hasChanges { discarding = true } else { dismiss() } } }
-            ToolbarItem(placement: .confirmationAction) { Button("保存", action: save) }
+            ToolbarItem(placement: .confirmationAction) { Button("保存", action: save).disabled(!store.canEditBook(bookID)) }
         }
         .onAppear {
             guard !didInitialize else { return }; didInitialize = true
