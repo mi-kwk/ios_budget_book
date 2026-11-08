@@ -191,11 +191,12 @@ struct MasterEditorView: View {
     let type: MasterType
     let bookID: UUID
     let existing: MasterEditTarget?
+    let onSaved: ((UUID) -> Void)?
     @State private var name: String
     @State private var error: String?
     @State private var confirmingArchive = false
-    init(type: MasterType, bookID: UUID, existing: MasterEditTarget? = nil) {
-        self.type = type; self.bookID = bookID; self.existing = existing
+    init(type: MasterType, bookID: UUID, existing: MasterEditTarget? = nil, onSaved: ((UUID) -> Void)? = nil) {
+        self.type = type; self.bookID = bookID; self.existing = existing; self.onSaved = onSaved
         _name = State(initialValue: existing?.name ?? "")
     }
     private var archivedMatch: BudgetTag? {
@@ -206,6 +207,10 @@ struct MasterEditorView: View {
     var body: some View {
         Form {
             Section("名前") { TextField("名前", text: $name) }
+            if onSaved != nil && existing == nil {
+                Text("追加した項目は、この取引を取消しても一覧に残ります。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if type == .tag {
                 Section { Text("同じ家計簿では、アーカイブ済みも含めて同じ名前は使えません。名称を変更しても過去の取引との関連や表示設定は保持されます。").font(.caption).foregroundStyle(.secondary) }
             } else {
@@ -214,7 +219,7 @@ struct MasterEditorView: View {
             if let match = archivedMatch {
                 Section("同名のアーカイブ済みタグがあります") {
                     Button("既存タグを復元して使用する") {
-                        perform { try $0.setTagArchived(id: match.id, bookID: bookID, archived: false) }
+                        perform(selecting: match.id) { try $0.setTagArchived(id: match.id, bookID: bookID, archived: false) }
                     }
                 }
             }
@@ -230,7 +235,7 @@ struct MasterEditorView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        if store.saveMaster(id: existing?.id, bookID: bookID, name: name, type: type) != nil { dismiss() }
+                        if let id = store.saveMaster(id: existing?.id, bookID: bookID, name: name, type: type) { onSaved?(id); dismiss() }
                         else { captureError() }
                     }.disabled(!store.canEditCurrentBook || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || archivedMatch != nil)
                 }
@@ -246,8 +251,11 @@ struct MasterEditorView: View {
                 }
             }
     }
-    private func perform(_ change: (inout BudgetSnapshot) throws -> Void) {
-        if store.update(change) { dismiss() } else { captureError() }
+    private func perform(selecting id: UUID? = nil, _ change: (inout BudgetSnapshot) throws -> Void) {
+        if store.update(change) {
+            if let id { onSaved?(id) }
+            dismiss()
+        } else { captureError() }
     }
     private func captureError() { error = store.errorMessage ?? "保存できませんでした。"; store.errorMessage = nil }
 }
@@ -262,6 +270,7 @@ struct AccountSelectionView: View {
     let allowsUnspecified: Bool
     let onSelect: (UUID?) -> Void
     @State private var adding = false
+    @State private var savedAccountID: UUID?
     var body: some View {
         List {
             if allowsUnspecified { Section { option(name: "未指定", id: nil) } }
@@ -278,14 +287,21 @@ struct AccountSelectionView: View {
             }
             Section {
                 Text(allowsUnspecified ? "振替元・振替先の少なくとも片方を指定してください。同じ項目同士には振替できません。" : "収入・支出では入出金元が必須です。")
-                Text("右上の＋から追加できます。追加後、一覧から選択してください。")
+                Text("右上の＋から追加できます。保存すると自動で選択し、取引入力へ戻ります。")
             }.font(.caption).foregroundStyle(.secondary)
         }.navigationTitle(title)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .topBarTrailing) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("入出金元を追加").disabled(!store.canEditCurrentBook) }
             }
-            .sheet(isPresented: $adding) { NavigationStack { MasterEditorView(type: .account, bookID: bookID) } }
+            .sheet(isPresented: $adding, onDismiss: {
+                guard let id = savedAccountID else { return }
+                savedAccountID = nil
+                guard store.state.accounts.contains(where: { $0.id == id && $0.bookID == bookID && !$0.isArchived }), store.canEditBook(bookID) else { return }
+                onSelect(id)
+            }) {
+                NavigationStack { MasterEditorView(type: .account, bookID: bookID, onSaved: { savedAccountID = $0 }) }
+            }
     }
     private func option(name: String, id: UUID?) -> some View {
         Button { onSelect(id) } label: {
@@ -448,6 +464,10 @@ struct CategoryEditorView: View {
     var body: some View {
         Form {
             Section("\(kind.title)カテゴリ") { TextField("名前", text: $name) }
+            if onSaved != nil && existing == nil {
+                Text("追加したカテゴリは、この取引を取消しても一覧に残ります。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             if allowsParentSelection {
                 Section("所属先") {
                     Picker("大カテゴリ", selection: $parentID) {
@@ -477,7 +497,7 @@ struct CategoryEditorView: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
                         if let id = store.saveCategory(id: existing?.id, bookID: bookID, kind: kind, name: name, parentID: parentID) {
-                            dismiss(); onSaved?(id)
+                            onSaved?(id); dismiss()
                         } else { error = store.errorMessage; store.errorMessage = nil }
                     }.disabled(!store.canEditCurrentBook || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
@@ -516,7 +536,7 @@ struct CategorySelectionView: View {
                     Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("カテゴリを追加").disabled(!store.canEditCurrentBook)
                 }
             }
-            .sheet(isPresented: $adding) { NavigationStack { CategoryEditorView(bookID: bookID, kind: kind) } }
+            .modifier(CategoryCreationFlow(adding: $adding, bookID: bookID, kind: kind, initialParentID: nil, currentID: currentID, onSelect: onSelect))
     }
     private func isSelected(_ parent: BudgetCategory) -> Bool {
         (currentID == nil && parent.isUncategorized) || store.state.categories.contains { $0.id == currentID && $0.parentID == parent.id }
@@ -552,9 +572,43 @@ struct CategoryChildSelectionView: View {
                     Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("小カテゴリを追加").disabled(!store.canEditCurrentBook)
                 }
             }
-            .sheet(isPresented: $adding) {
-                NavigationStack { CategoryEditorView(bookID: parent.bookID, kind: parent.kind, initialParentID: parent.id) }
+            .modifier(CategoryCreationFlow(adding: $adding, bookID: parent.bookID, kind: parent.kind, initialParentID: parent.id, currentID: currentID, onSelect: onSelect))
+    }
+}
+
+/// Wait for the creation sheet to close before closing its parent selection sheet or pushing a child list.
+private struct CategoryCreationFlow: ViewModifier {
+    @EnvironmentObject private var store: BudgetStore
+    @Binding var adding: Bool
+    let bookID: UUID
+    let kind: EntryKind
+    let initialParentID: UUID?
+    let currentID: UUID?
+    let onSelect: (UUID) -> Void
+    @State private var savedCategoryID: UUID?
+    @State private var createdParentID: UUID?
+    @State private var showingCreatedParent = false
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $adding, onDismiss: finishCreation) {
+                NavigationStack {
+                    CategoryEditorView(bookID: bookID, kind: kind, initialParentID: initialParentID, onSaved: { savedCategoryID = $0 })
+                }
             }
+            .navigationDestination(isPresented: $showingCreatedParent) {
+                if let parent = store.state.categories.first(where: { $0.id == createdParentID && $0.bookID == bookID && $0.kind == kind }) {
+                    CategoryChildSelectionView(parent: parent, currentID: currentID, onSelect: onSelect)
+                }
+            }
+    }
+    private func finishCreation() {
+        guard let id = savedCategoryID else { return }
+        savedCategoryID = nil
+        guard store.canEditBook(bookID), let category = store.state.categories.first(where: { $0.id == id && $0.bookID == bookID && $0.kind == kind }), store.state.isCategoryAvailable(category) else { return }
+        if category.parentID == nil {
+            createdParentID = id
+            showingCreatedParent = true
+        } else { onSelect(id) }
     }
 }
 

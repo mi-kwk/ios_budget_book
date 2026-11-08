@@ -120,7 +120,11 @@ struct EntryEditor: View {
                 }
             }
         }
-        .sheet(item: $master) { item in NavigationStack { MasterEditorView(type: item, bookID: bookID) } }
+        .sheet(item: $master) { item in
+            NavigationStack {
+                MasterEditorView(type: item, bookID: bookID, onSaved: { id in tags.insert(id) })
+            }
+        }
         .sheet(item: $choosingAccount) { side in
             NavigationStack {
                 AccountSelectionView(bookID: bookID, title: side == .source ? "出金元" : "入金先",
