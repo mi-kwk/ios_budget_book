@@ -17,6 +17,7 @@ struct RootView: View {
             shell("入出金") { EntriesView() }.tabItem { Label("入出金", systemImage: "list.bullet.rectangle") }.tag(BudgetTab.entries)
             shell("収支") { SummaryView() }.tabItem { Label("収支", systemImage: "chart.pie") }.tag(BudgetTab.summary)
         }
+        .sheet(isPresented: $store.showHistory) { HistorySearchNavigation() }
         .sheet(isPresented: $showSettings) { NavigationStack { SettingsView() } }
         .sheet(isPresented: $showEntry) {
             if let bookID = store.bookID { NavigationStack { EntryEditor(bookID: bookID, initialDate: newEntryDate) } }
@@ -217,7 +218,7 @@ struct EntriesView: View {
                     if visible.contains(where: { $0.kind == .transfer }) { Label("振替があります（収支には含みません）", systemImage: "arrow.left.arrow.right").font(.caption) }
                 }
             }
-            NavigationLink("履歴を検索", destination: HistoryView())
+            Button("履歴を検索") { store.openHistorySearch() }
             if visible.isEmpty { ContentUnavailableView("取引がありません", systemImage: "tray", description: Text("この家計簿の取引を＋から登録してください。")) }
             ForEach(visible) { entry in
                 NavigationLink { EntryDetail(entryID: entry.id) } label: { EntryRow(entry: entry) }
@@ -291,34 +292,12 @@ struct SummaryView: View {
     }
 }
 
-struct HistoryView: View {
-    @EnvironmentObject private var store: BudgetStore
-    @State private var text = ""
-    @State private var selectedTags: Set<UUID> = []
-    @State private var matchAll = true
-    var body: some View {
-        List {
-            if !store.tags.isEmpty {
-                Section("タグで絞り込み") {
-                    Picker("複数タグ条件", selection: $matchAll) { Text("すべて一致（AND）").tag(true); Text("いずれか（OR）").tag(false) }
-                    ForEach(store.tags) { tag in
-                        Toggle(tag.name, isOn: Binding(get: { selectedTags.contains(tag.id) }, set: { if $0 { selectedTags.insert(tag.id) } else { selectedTags.remove(tag.id) } }))
-                    }
-                }
-            }
-            Section("すべての期間・対象外の取引も含む") {
-                ForEach(BudgetSummary.matchingTags(store.entries, tags: selectedTags, matchAll: matchAll).filter { text.isEmpty || $0.memo.localizedCaseInsensitiveContains(text) || ($0.merchant ?? "").localizedCaseInsensitiveContains(text) }) { entry in
-                    NavigationLink { EntryDetail(entryID: entry.id) } label: { EntryRow(entry: entry) }
-                }
-            }
-        }.searchable(text: $text, prompt: "お店・相手先・メモ").navigationTitle("履歴")
-    }
-}
-
 struct EntryDetail: View {
     @EnvironmentObject private var store: BudgetStore
     @Environment(\.dismiss) private var dismiss
     let entryID: UUID
+    var fromHistory = false
+    @State private var editedFromHistory = false
     @State private var editing = false
     @State private var deleting = false
     @State private var addingRefund = false
@@ -356,7 +335,15 @@ struct EntryDetail: View {
                     Button("削除", role: .destructive) { deleting = true }.disabled(!store.canEditBook(entry.bookID))
                 }
                 .sheet(isPresented: $addingRefund) { NavigationStack { EntryEditor(bookID: entry.bookID, refundOriginal: entry) } }
-                .sheet(isPresented: $editing) { NavigationStack { EntryEditor(bookID: entry.bookID, existing: entry) } }
+                .sheet(isPresented: $editing, onDismiss: {
+                    if editedFromHistory { editedFromHistory = false; dismiss() }
+                }) {
+                    NavigationStack {
+                        EntryEditor(bookID: entry.bookID, existing: entry, onSaved: { id in
+                            if fromHistory { store.historyEntrySaved(id); editedFromHistory = true }
+                        })
+                    }
+                }
                 .confirmationDialog("この取引を削除しますか？", isPresented: $deleting, titleVisibility: .visible) {
                     Button("削除", role: .destructive) { store.deleteEntry(entryID); if store.errorMessage == nil { dismiss() } }
                 } message: {

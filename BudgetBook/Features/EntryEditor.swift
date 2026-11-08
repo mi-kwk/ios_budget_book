@@ -6,6 +6,7 @@ struct EntryEditor: View {
     let bookID: UUID
     let existing: BudgetEntry?
     let refundOriginal: BudgetEntry?
+    let onSaved: ((UUID) -> Void)?
     @State private var kind: EntryKind
     @State private var amount: String
     @State private var date: Date
@@ -23,8 +24,8 @@ struct EntryEditor: View {
     @State private var choosingAccount: AccountSide?
     @State private var choosingCategory = false
     @State private var didInitialize = false
-    init(bookID: UUID, existing: BudgetEntry? = nil, refundOriginal: BudgetEntry? = nil, initialDate: Date = Date()) {
-        self.bookID = bookID; self.existing = existing; self.refundOriginal = refundOriginal
+    init(bookID: UUID, existing: BudgetEntry? = nil, refundOriginal: BudgetEntry? = nil, initialDate: Date = Date(), onSaved: ((UUID) -> Void)? = nil) {
+        self.bookID = bookID; self.existing = existing; self.refundOriginal = refundOriginal; self.onSaved = onSaved
         _kind = State(initialValue: existing?.kind ?? (refundOriginal == nil ? .expense : .refund))
         _amount = State(initialValue: existing.map { String($0.amount) } ?? "")
         _date = State(initialValue: existing?.date ?? EntryDateLimits.clamp(max(initialDate, refundOriginal?.date ?? .distantPast)))
@@ -172,7 +173,7 @@ struct EntryEditor: View {
         var entry = draft
         entry.id = existing?.id ?? UUID(); entry.amount = value
         do { _ = try store.state.validated(entry, previous: existing) } catch { self.error = error.localizedDescription; return }
-        if store.saveEntry(entry) { dismiss() } else { error = store.errorMessage; store.errorMessage = nil }
+        if store.saveEntry(entry) { onSaved?(entry.id); dismiss() } else { error = store.errorMessage; store.errorMessage = nil }
     }
 }
 

@@ -20,6 +20,26 @@ final class BudgetStore: ObservableObject {
     func selectCalendarDay(_ date: Date) { calendarNavigation.selectDay(date) }
     func goToToday() { calendarNavigation = CalendarNavigation() }
     func setWeekStart(_ start: CalendarWeekStart) { update { $0.calendarWeekStart = start } }
+    @Published var showHistory = false
+    @Published private(set) var historyQuery: EntrySearchQuery?
+    @Published private(set) var historyNotice: String?
+    func beginHistorySearch() { if historyQuery == nil { historyQuery = EntrySearchQuery(month: displayMonth) } }
+    func openHistorySearch() { beginHistorySearch(); historyNotice = nil; showHistory = true }
+    func resetHistorySearch() { historyQuery = EntrySearchQuery(month: displayMonth); historyNotice = nil }
+    func setHistoryQuery(_ query: EntrySearchQuery) {
+        guard historyQuery != query else { return }
+        historyQuery = query; historyNotice = nil
+    }
+    func historyEntrySaved(_ id: UUID) {
+        guard let book = bookID, let query = historyQuery else { return }
+        let remains = state.searchEntries(bookID: book, query: query).contains { $0.id == id }
+        historyNotice = remains ? "保存しました。検索条件・期間を保持して結果を更新しました。" : "保存しました。検索条件に合わなくなったため、編集した取引は検索結果から非表示になりました。条件・期間は保持しています。"
+    }
+    private func historyBookChanged(from old: UUID?, force: Bool = false) {
+        guard force || old != bookID else { return }
+        historyQuery?.clearBookSelections()
+        historyNotice = showHistory ? "家計簿を切り替えました。カテゴリ・タグ・入出金元の選択を解除し、他の条件は保持しています。" : nil
+    }
     private let repository: any BudgetRepository
     private(set) var canWrite = true
     @Published private(set) var rollbackRecord: RollbackRecord?
@@ -79,17 +99,22 @@ final class BudgetStore: ObservableObject {
         } catch { errorMessage = error.localizedDescription; return false }
     }
     func selectBook(_ id: UUID) {
-        if update({ try $0.selectActiveBook(id) }) { viewingArchivedBookID = nil }
+        let old = bookID
+        if update({ try $0.selectActiveBook(id) }) { viewingArchivedBookID = nil; historyBookChanged(from: old) }
     }
     func viewArchivedBook(_ id: UUID) {
         guard state.books.contains(where: { $0.id == id && $0.archived }) else { return }
+        let old = bookID
         viewingArchivedBookID = id
+        historyBookChanged(from: old)
     }
-    func endArchivedViewing() { viewingArchivedBookID = nil }
+    func endArchivedViewing() { let old = bookID; viewingArchivedBookID = nil; historyBookChanged(from: old) }
     func renameBook(id: UUID, name: String) -> Bool { update { try $0.renameBook(id: id, name: name) } }
     func setBookArchived(id: UUID, archived: Bool) -> Bool {
+        let old = bookID
         let saved = update { try $0.setBookArchived(id: id, archived: archived) }
         if saved, viewingArchivedBookID == id { viewingArchivedBookID = nil }
+        if saved { historyBookChanged(from: old) }
         return saved
     }
     func moveBooks(from: IndexSet, to: Int) {
@@ -108,7 +133,8 @@ final class BudgetStore: ObservableObject {
     }
     func deleteEntry(_ id: UUID) { update { try $0.deleteTransaction(id) } }
     func addBook(name: String, shared: Bool) {
-        if update({ try $0.createBook(name: name, shared: shared) }) { viewingArchivedBookID = nil }
+        let old = bookID
+        if update({ try $0.createBook(name: name, shared: shared) }) { viewingArchivedBookID = nil; historyBookChanged(from: old) }
     }
     func toggleArchive(_ id: UUID, type: MasterType) {
         update { snapshot in
@@ -177,6 +203,7 @@ final class BudgetStore: ObservableObject {
         let record = try RestoreCoordinator(repository: storage, keys: DeviceRollbackKeyStore()).restore(restored)
         state = restored
         viewingArchivedBookID = nil
+        historyBookChanged(from: nil, force: true)
         rollbackRecord = record
     }
     func undoRestore() throws {
@@ -188,6 +215,7 @@ final class BudgetStore: ObservableObject {
         }
         rollbackRecord = nil
         viewingArchivedBookID = nil
+        historyBookChanged(from: nil, force: true)
     }
     func clearRollback() throws {
         guard let storage = repository as? any RestoreRepository else { throw BackupError.noRollback }

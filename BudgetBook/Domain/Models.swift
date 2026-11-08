@@ -1,6 +1,6 @@
 import Foundation
 
-enum EntryKind: String, Codable, CaseIterable, Identifiable {
+enum EntryKind: String, Codable, CaseIterable, Identifiable, Hashable {
     case expense, income, transfer, refund
     var id: String { rawValue }
     var title: String {
