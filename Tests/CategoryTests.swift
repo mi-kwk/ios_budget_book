@@ -124,3 +124,40 @@ func runCategoryChecks() throws {
     try fresh.addBasicCategories(bookID: second)
     expect(fresh == afterSet && fresh.books == beforeSet.books, "基本セットの追加は冪等で家計簿を増やさない")
 }
+
+
+func runCategoryIconChecks() throws {
+    var state = BudgetSnapshot.initial()
+    let book = state.selectedBookID!
+    let food = state.categories.first { $0.bookID == book && $0.name == "食費" && $0.parentID == nil }!
+    let child = state.categories.first { $0.parentID == food.id }!
+    expect(state.categorySymbol(food.id) == "fork.knife", "標準食費アイコン")
+    expect(state.categorySymbol(child.id) == "fork.knife", "子は親アイコンを継承")
+    _ = try state.saveCategory(id: food.id, bookID: book, kind: .expense, name: "食事", parentID: nil, iconName: "gift")
+    expect(state.categorySymbol(child.id) == "gift", "変更は既存の子へ反映")
+    _ = try state.saveCategory(id: food.id, bookID: book, kind: .expense, name: "食品", parentID: nil)
+    expect(state.categorySymbol(food.id) == "gift", "名前変更でも選択アイコンを保持")
+    let home = state.categories.first { $0.name == "住居費" && $0.parentID == nil }!
+    _ = try state.saveCategory(id: child.id, bookID: book, kind: .expense, name: child.name, parentID: home.id)
+    expect(state.categorySymbol(child.id) == "house", "所属変更後は新しい親アイコン")
+    rejects("任意の不正シンボルを保存しない") { _ = try state.saveCategory(id: home.id, bookID: book, kind: .expense, name: home.name, parentID: nil, iconName: "invalid-symbol") }
+    let unclassified = state.categories.first { $0.bookID == book && $0.isUncategorized && $0.parentID == nil }!
+    expect(state.categorySymbol(unclassified.id) == "questionmark.folder", "未分類は固定")
+    let data = try JSONEncoder().encode(state)
+    let decoded = try JSONDecoder().decode(BudgetSnapshot.self, from: data)
+    expect(decoded == state, "アイコン設定をJSONで完全保持")
+    var legacy = state
+    let index = legacy.categories.firstIndex { $0.id == food.id }!
+    legacy.categories[index].iconName = nil
+    legacy.categories[index].name = "食費"
+    let legacyData = try JSONEncoder().encode(legacy)
+    let loaded = try JSONDecoder().decode(BudgetSnapshot.self, from: legacyData)
+    expect(loaded.categorySymbol(food.id) == "fork.knife", "アイコンキーなし旧JSONのフォールバック")
+    _ = try legacy.saveCategory(id: food.id, bookID: book, kind: .expense, name: "改名後", parentID: nil)
+    expect(legacy.categorySymbol(food.id) == "fork.knife", "旧カテゴリの改名時に既定アイコンを固定")
+    legacy.categories[index].iconName = "unknown-future-icon"
+    expect(legacy.categorySymbol(food.id) == "questionmark.folder", "未知の保存アイコンは安全にフォールバック")
+    let encrypted = try BackupCodec.encrypt(BackupPayload(snapshot: state), password: "icon-test-password")
+    let restored = try BackupCodec.decrypt(encrypted, password: "icon-test-password")
+    expect(restored.snapshot == state, "暗号化バックアップでアイコンを保持")
+}

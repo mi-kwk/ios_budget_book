@@ -371,11 +371,25 @@ struct CategoryManagementView: View {
     }
 }
 
+struct CategoryIconView: View {
+    @EnvironmentObject private var store: BudgetStore
+    let categoryID: UUID?
+    var body: some View {
+        let income = store.state.categories.first { $0.id == categoryID }?.kind == .income
+        Image(systemName: store.state.categorySymbol(categoryID))
+            .font(.body).foregroundStyle(income ? Color.green : Color.teal)
+            .frame(width: 34, height: 34)
+            .background((income ? Color.green : Color.teal).opacity(0.1), in: RoundedRectangle(cornerRadius: 9))
+            .accessibilityHidden(true)
+    }
+}
+
 struct CategoryNameView: View {
     @EnvironmentObject private var store: BudgetStore
     let category: BudgetCategory
     var body: some View {
         HStack {
+            CategoryIconView(categoryID: category.id)
             VStack(alignment: .leading, spacing: 4) {
                 Text(category.name)
                 if category.isArchived { Text("アーカイブ済み").font(.caption).foregroundStyle(.secondary) }
@@ -401,7 +415,7 @@ struct CategoryChildrenView: View {
                     Section("大カテゴリ") {
                         CategoryNameView(category: parent)
                         if !parent.isUncategorized {
-                            Button("名称を変更") { editing = parent }.disabled(!store.canEditCurrentBook)
+                            Button("名称・アイコンを変更") { editing = parent }.disabled(!store.canEditCurrentBook)
                             Button(parent.isArchived ? "復元" : "アーカイブ") { confirmsArchive = true }.disabled(!store.canEditCurrentBook)
                         }
                     }
@@ -453,6 +467,7 @@ struct CategoryEditorView: View {
     var onSaved: ((UUID) -> Void)?
     @State private var name: String
     @State private var parentID: UUID?
+    @State private var iconName: String?
     @State private var error: String?
     private var allowsParentSelection: Bool { existing == nil || existing?.parentID != nil }
 
@@ -460,6 +475,7 @@ struct CategoryEditorView: View {
         self.bookID = bookID; self.kind = kind; self.existing = existing; self.onSaved = onSaved
         _name = State(initialValue: existing?.name ?? "")
         _parentID = State(initialValue: existing?.parentID ?? initialParentID)
+        _iconName = State(initialValue: existing?.iconName)
     }
     var body: some View {
         Form {
@@ -476,6 +492,34 @@ struct CategoryEditorView: View {
                             !$0.isUncategorized && (!$0.isArchived || $0.id == existing?.parentID)
                         }) { parent in Text(parent.name + (parent.isArchived ? "（アーカイブ済み）" : "")).tag(Optional(parent.id)) }
                     }
+                }
+            }
+            if parentID == nil {
+                Section("アイコン") {
+                    NavigationLink {
+                        List {
+                            Button { iconName = CategorySymbol.defaultSymbol(name: name, kind: kind) } label: {
+                                Label("名前に合わせた標準アイコン", systemImage: CategorySymbol.defaultSymbol(name: name, kind: kind))
+                            }
+                            ForEach(CategorySymbol.choices, id: \.symbol) { choice in
+                                Button { iconName = choice.symbol } label: {
+                                    HStack {
+                                        Label(choice.title, systemImage: choice.symbol)
+                                        Spacer()
+                                        if iconName == choice.symbol { Image(systemName: "checkmark") }
+                                    }
+                                }
+                            }
+                        }.navigationTitle("アイコンを選択")
+                    } label: {
+                        Label("アイコンを選択", systemImage: iconName ?? existing.map { store.state.categorySymbol($0.id) } ?? CategorySymbol.defaultSymbol(name: name, kind: kind))
+                    }
+                    Text("配下の小カテゴリと過去の取引にも同じアイコンを表示します。保存すると反映します。")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            } else {
+                Section("アイコン") {
+                    Label("大カテゴリのアイコンを使用", systemImage: store.state.categorySymbol(parentID))
                 }
             }
             if existing != nil {
@@ -496,7 +540,7 @@ struct CategoryEditorView: View {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
-                        if let id = store.saveCategory(id: existing?.id, bookID: bookID, kind: kind, name: name, parentID: parentID) {
+                        if let id = store.saveCategory(id: existing?.id, bookID: bookID, kind: kind, name: name, parentID: parentID, iconName: iconName) {
                             onSaved?(id); dismiss()
                         } else { error = store.errorMessage; store.errorMessage = nil }
                     }.disabled(!store.canEditCurrentBook || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -525,7 +569,7 @@ struct CategorySelectionView: View {
             Section("大カテゴリを選択") {
                 ForEach(store.state.orderedCategories(bookID: bookID, kind: kind, parentID: nil).filter { store.state.isCategoryAvailable($0) }) { parent in
                     NavigationLink { CategoryChildSelectionView(parent: parent, currentID: currentID, onSelect: onSelect) } label: {
-                        HStack { Text(parent.name); Spacer(); if isSelected(parent) { Image(systemName: "checkmark").foregroundStyle(.teal) } }
+                        HStack { CategoryIconView(categoryID: parent.id); Text(parent.name); Spacer(); if isSelected(parent) { Image(systemName: "checkmark").foregroundStyle(.teal) } }
                     }
                 }
             }
@@ -559,7 +603,7 @@ struct CategoryChildSelectionView: View {
             Section("小カテゴリを選択") {
                 ForEach(store.state.orderedCategories(bookID: parent.bookID, kind: parent.kind, parentID: parent.id).filter { store.state.isCategoryAvailable($0) }) { child in
                     Button { onSelect(child.id) } label: {
-                        HStack { Text(child.name); Spacer(); if currentID == child.id || (currentID == nil && child.isUncategorized) { Image(systemName: "checkmark") } }
+                        HStack { CategoryIconView(categoryID: child.id); Text(child.name); Spacer(); if currentID == child.id || (currentID == nil && child.isUncategorized) { Image(systemName: "checkmark") } }
                     }
                 }
                 if !store.state.categories.contains(where: { $0.parentID == parent.id && store.state.isCategoryAvailable($0) }) {

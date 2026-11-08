@@ -192,7 +192,7 @@ struct CategoryChart: View {
                             }
                         }.navigationTitle(item.name)
                     }
-                } label: { HStack { Text(item.name); Spacer(); Text(yen(item.amount)).foregroundStyle(.secondary) } }
+                } label: { HStack { CategoryIconView(categoryID: item.id); Text(item.name); Spacer(); Text(yen(item.amount)).foregroundStyle(.secondary) } }
             }
         }
     }
@@ -232,8 +232,9 @@ struct EntryRow: View {
     let entry: BudgetEntry
     var body: some View {
         HStack(alignment: .top) {
-            Image(systemName: entry.kind == .transfer ? "arrow.left.arrow.right" : entry.kind == .expense ? "arrow.up.right" : "arrow.down.left")
-                .foregroundStyle(entry.kind == .expense ? Color.orange : Color.teal).frame(width: 24)
+            if entry.kind == .transfer {
+                Image(systemName: "arrow.left.arrow.right").foregroundStyle(.teal).frame(width: 34).accessibilityHidden(true)
+            } else { CategoryIconView(categoryID: entry.categoryID) }
             VStack(alignment: .leading, spacing: 4) {
                 Text(entry.kind == .transfer ? "\(store.accountName(entry.sourceID)) → \(store.accountName(entry.destinationID))" : store.categoryName(entry.categoryID))
                 Text("\(entry.date.formatted(date: .abbreviated, time: .omitted)) ・ \(entry.kind.title)").font(.caption).foregroundStyle(.secondary)

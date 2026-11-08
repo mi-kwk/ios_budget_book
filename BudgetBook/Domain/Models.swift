@@ -37,6 +37,7 @@ struct BudgetCategory: Identifiable, Codable, Equatable {
     var name: String
     var kind: EntryKind
     var parentID: UUID? = nil
+    var iconName: String? = nil
     var isUncategorized = false
     var isArchived = false
     var order = 0
@@ -230,10 +231,11 @@ extension BudgetSnapshot {
     }
 
     @discardableResult
-    mutating func saveCategory(id: UUID? = nil, bookID: UUID, kind: EntryKind, name: String, parentID: UUID?) throws -> UUID {
+    mutating func saveCategory(id: UUID? = nil, bookID: UUID, kind: EntryKind, name: String, parentID: UUID?, iconName: String? = nil) throws -> UUID {
         try requireEditableBook(bookID)
         guard books.contains(where: { $0.id == bookID }) else { throw BudgetError.invalidBook }
         guard kind != .transfer && kind != .refund else { throw BudgetError.invalidCategory }
+        if let iconName, !CategorySymbol.choices.contains(where: { $0.symbol == iconName }) { throw BudgetError.invalidCategory }
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { throw BudgetError.emptyName }
         let existing = id.flatMap { id in categories.first { $0.id == id } }
@@ -256,12 +258,14 @@ extension BudgetSnapshot {
             if categories[index].parentID != parentID {
                 categories[index].order = (orderedCategories(bookID: bookID, kind: kind, parentID: parentID).last?.order ?? -1) + 1
             }
+            if parentID == nil { categories[index].iconName = iconName ?? categorySymbol(existing!.id) }
             categories[index].name = name
             categories[index].parentID = parentID
             return categories[index].id
         }
-        let newCategory = BudgetCategory(bookID: bookID, name: name, kind: kind, parentID: parentID,
+        var newCategory = BudgetCategory(bookID: bookID, name: name, kind: kind, parentID: parentID,
                                          order: (orderedCategories(bookID: bookID, kind: kind, parentID: parentID).last?.order ?? -1) + 1)
+        if parentID == nil { newCategory.iconName = iconName ?? CategorySymbol.defaultSymbol(name: name, kind: kind) }
         categories.append(newCategory)
         return newCategory.id
     }
@@ -738,5 +742,38 @@ extension BudgetSnapshot {
     mutating func setAnnualLineChart(bookID: UUID, enabled: Bool) throws {
         try requireEditableBook(bookID)
         books[books.firstIndex { $0.id == bookID }!].annualLineChart = enabled
+    }
+}
+
+
+/// Curated SF Symbols available on the minimum supported iOS. Children inherit the root symbol.
+struct CategorySymbol {
+    let title: String
+    let symbol: String
+    static let choices: [Self] = [
+        .init(title: "食費", symbol: "fork.knife"), .init(title: "日用品", symbol: "basket"),
+        .init(title: "住居費", symbol: "house"), .init(title: "水道・光熱費", symbol: "lightbulb"),
+        .init(title: "通信費", symbol: "antenna.radiowaves.left.and.right"), .init(title: "交通費", symbol: "tram"),
+        .init(title: "自動車費", symbol: "car"), .init(title: "衣服・美容", symbol: "tshirt"),
+        .init(title: "健康・医療", symbol: "cross.case"), .init(title: "趣味・娯楽", symbol: "gamecontroller"),
+        .init(title: "交際費", symbol: "person.2"), .init(title: "教育・子育て", symbol: "graduationcap"),
+        .init(title: "保険", symbol: "shield.lefthalf.filled"), .init(title: "税金・社会保険", symbol: "building.columns"),
+        .init(title: "その他（支出）", symbol: "ellipsis.circle"), .init(title: "給与", symbol: "banknote"),
+        .init(title: "事業・副業", symbol: "briefcase"), .init(title: "年金・給付金", symbol: "hands.sparkles"),
+        .init(title: "運用収入", symbol: "chart.line.uptrend.xyaxis"), .init(title: "臨時収入", symbol: "gift"),
+        .init(title: "その他（収入）", symbol: "plus.circle"), .init(title: "未分類", symbol: "questionmark.folder")
+    ]
+    static func defaultSymbol(name: String, kind: EntryKind) -> String {
+        if name == "その他" { return kind == .income ? "plus.circle" : "ellipsis.circle" }
+        return choices.first { $0.title == name }?.symbol ?? "questionmark.folder"
+    }
+}
+extension BudgetSnapshot {
+    func categorySymbol(_ id: UUID?) -> String {
+        guard let category = categories.first(where: { $0.id == id }) else { return "questionmark.folder" }
+        let root = category.parentID.flatMap { parent in categories.first { $0.id == parent && $0.bookID == category.bookID } } ?? category
+        if root.isUncategorized { return "questionmark.folder" }
+        if let saved = root.iconName, CategorySymbol.choices.contains(where: { $0.symbol == saved }) { return saved }
+        return CategorySymbol.defaultSymbol(name: root.name, kind: root.kind)
     }
 }

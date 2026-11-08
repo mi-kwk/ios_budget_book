@@ -152,10 +152,10 @@ final class BudgetStore: ObservableObject {
         }
     }
     @discardableResult
-    func saveCategory(id: UUID? = nil, bookID: UUID, kind: EntryKind, name: String, parentID: UUID?) -> UUID? {
+    func saveCategory(id: UUID? = nil, bookID: UUID, kind: EntryKind, name: String, parentID: UUID?, iconName: String? = nil) -> UUID? {
         var savedID: UUID?
         let success = update { snapshot in
-            savedID = try snapshot.saveCategory(id: id, bookID: bookID, kind: kind, name: name, parentID: parentID)
+            savedID = try snapshot.saveCategory(id: id, bookID: bookID, kind: kind, name: name, parentID: parentID, iconName: iconName)
         }
         return success ? savedID : nil
     }
